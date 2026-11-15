@@ -80,9 +80,24 @@ pub struct GpuPolicy {
     pub desktop_priority: u32,
     /// The synthetic priority of the broker model-load starvation signal.
     pub broker_priority: u32,
+    /// Consecutive observations a guarded resource must read zero, while the
+    /// device plugin runs, before the plugin is restarted (5).
+    pub guard_grace_ticks: u32,
+    /// How long after a device plugin restart the next one may be decided (300 s).
+    pub guard_cooldown_secs: u64,
 }
 
 impl GpuPolicy {
+    /// The instant a device plugin restart at `restarted_at` finishes its cooldown.
+    #[must_use]
+    pub fn guard_cooldown_until(&self, restarted_at: Timestamp) -> Timestamp {
+        Timestamp::from_millis(
+            restarted_at
+                .as_millis()
+                .saturating_add(self.guard_cooldown_secs.saturating_mul(1000)),
+        )
+    }
+
     /// The instant a reclaim at `reclaimed_at` finishes its cooldown.
     ///
     /// The daemon is event-driven, so the cooldown is a deadline in time, not a
@@ -106,6 +121,8 @@ impl Default for GpuPolicy {
             cooldown_secs: 18,
             desktop_priority: 2_000_000,
             broker_priority: 1_000,
+            guard_grace_ticks: 5,
+            guard_cooldown_secs: 300,
         }
     }
 }

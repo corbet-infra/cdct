@@ -70,6 +70,10 @@ pub enum PlanStep {
         /// The kernel that now holds the card.
         kernel: KernelOwner,
     },
+    /// The GPU device plugin lost its registration (the card's resources read
+    /// zero while it runs): the runtime restarts it, and a fresh process
+    /// registers again.
+    RestartDevicePlugin,
 }
 
 /// Why a switch is declined.
@@ -315,6 +319,52 @@ fn host_plan(gpu: &GpuState, displaced: &[DisplacedTenant]) -> SwitchPlan {
         memory: None,
         displaced: Vec::new(),
         steps,
+    }
+}
+
+/// The plan for a ladder shed: the card stays on the host, one tenant leaves
+/// it. The tenant is listed as displaced so the runtime records its live
+/// replica count before the stop, which is what [`restore_plan`] starts.
+#[must_use]
+pub fn shed_plan(tenant: &str, ladder: crate::gpu::GpuLadder) -> SwitchPlan {
+    SwitchPlan {
+        target: KernelOwner::Host,
+        memory: None,
+        displaced: vec![DisplacedTenant {
+            tenant: tenant.to_owned(),
+            ladder,
+            replicas: 0,
+        }],
+        steps: vec![PlanStep::StopHostTenant {
+            tenant: tenant.to_owned(),
+            ladder,
+        }],
+    }
+}
+
+/// The plan that returns a shed tenant to the card with the replicas it had.
+#[must_use]
+pub fn restore_plan(tenant: &str, ladder: crate::gpu::GpuLadder, replicas: u32) -> SwitchPlan {
+    SwitchPlan {
+        target: KernelOwner::Host,
+        memory: None,
+        displaced: Vec::new(),
+        steps: vec![PlanStep::StartHostTenant {
+            tenant: tenant.to_owned(),
+            ladder,
+            replicas,
+        }],
+    }
+}
+
+/// The plan that restarts the GPU device plugin; the card stays where it is.
+#[must_use]
+pub fn guard_plan() -> SwitchPlan {
+    SwitchPlan {
+        target: KernelOwner::Host,
+        memory: None,
+        displaced: Vec::new(),
+        steps: vec![PlanStep::RestartDevicePlugin],
     }
 }
 

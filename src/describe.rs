@@ -203,6 +203,7 @@ fn step_line(step: &PlanStep) -> String {
             replicas,
         } => format!("start host tenant {tenant} ({ladder}), {replicas} replica(s)"),
         PlanStep::SunshineFollows { kernel } => format!("Sunshine follows {kernel}"),
+        PlanStep::RestartDevicePlugin => "restart the GPU device plugin".to_owned(),
     }
 }
 

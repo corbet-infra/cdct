@@ -26,16 +26,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdrv::{
     Event, EventLog, GpuLadder, HolderId, InstanceClass, InstanceId, InstanceState, KernelOwner,
-    LeaseId, Source, Timestamp,
+    LeaseId, Severity, Source, Subject, Timestamp,
 };
 use listenfd::ListenFd;
 
 use crate::config::{Config, InstanceConfig};
 use crate::engine::{Conductor, FactsFile};
 use crate::facts::MemorySnapshot;
-use crate::gpu::{DisplacedTenant, GpuState, GpuTenant, InstanceObservation, TenantState};
+use crate::gpu::{
+    DisplacedTenant, GpuState, GpuTenant, InstanceObservation, LadderDecision, LadderInput,
+    TenantState, decide_ladder,
+};
 use crate::holders::{Holder, HolderState, HolderStore, HolderTable};
-use crate::plan::SwitchOutcome;
+use crate::ladder::{
+    PressureObservation, RestoreDecision, ShedTenant, decide_guard, decide_restore, measure_freed,
+};
+use crate::plan::{SwitchOutcome, SwitchPlan, guard_plan, restore_plan, shed_plan};
 use crate::protocol::{
     Availability, Channel, HolderSummary, Reply, Request, Status, TargetStatus, decode, encode,
 };
@@ -98,6 +104,15 @@ impl Drop for Running {
     }
 }
 
+/// What one pressure observation decided.
+struct PressureOutcome {
+    ladder: LadderDecision,
+    restore: Option<RestoreDecision>,
+    restart_plugin: bool,
+    plan: Option<SwitchPlan>,
+    events: Vec<Event>,
+}
+
 /// Everything the daemon keeps under its one lock.
 struct Inner {
     config: Config,
@@ -106,6 +121,11 @@ struct Inner {
     store: HolderStore,
     log: EventLog,
     subscribers: Vec<Sender<String>>,
+    /// The live ladder's cooldown deadline: no shed or restore before it. In
+    /// memory only; a restarted daemon starts without one.
+    cooldown_until: Timestamp,
+    /// No device plugin restart before this instant (in memory only).
+    guard_cooldown_until: Timestamp,
 }
 
 impl Inner {
@@ -358,11 +378,165 @@ impl Inner {
         Ok((self.table.gpu_owner.clone(), events))
     }
 
+    /// Run the live ladder on one observation: shed the lowest tenant when a
+    /// graced signal outranks it, else return a shed tenant whose VRAM is free
+    /// again. A shed or a restore is recorded, starts the cooldown and is
+    /// returned as the plan to push; anything else changes nothing but the
+    /// measurement of what an earlier shed freed.
+    fn pressure(&mut self, observation: &PressureObservation) -> Result<PressureOutcome, String> {
+        let at = now();
+        let policy = self.conductor.policy().gpu.clone();
+        // A lost device plugin registration blocks every tenant: it is cured
+        // first, and nothing else is decided on this observation.
+        if decide_guard(
+            &self.table.gpu_owner,
+            observation,
+            at,
+            self.guard_cooldown_until,
+            &policy,
+        ) {
+            self.guard_cooldown_until = policy.guard_cooldown_until(at);
+            let event = self.log.emit(
+                at,
+                "gpu.device_plugin_restart",
+                Subject::Host,
+                Severity::Warn,
+                serde_json::json!({"signals": observation.signals}),
+            );
+            return Ok(PressureOutcome {
+                ladder: LadderDecision::None {
+                    reason: crate::gpu::LadderHold::NoGracedSignal,
+                },
+                restore: None,
+                restart_plugin: true,
+                plan: Some(guard_plan()),
+                events: vec![event],
+            });
+        }
+        let mut changed = false;
+        // The first observation after a shed's cooldown measures what it freed.
+        if at >= self.cooldown_until {
+            for shed in &mut self.table.shed {
+                if shed.freed_bytes.is_none()
+                    && let Some(freed) = measure_freed(shed, observation.vram)
+                {
+                    shed.freed_bytes = Some(freed);
+                    changed = true;
+                }
+            }
+        }
+        // A count read at zero holds nothing on the card: nothing to return.
+        let before = self.table.shed.len();
+        self.table
+            .shed
+            .retain(|shed| shed.replicas > 0 || shed.freed_bytes.is_none());
+        changed |= self.table.shed.len() != before;
+        let input = LadderInput {
+            owner: self.table.gpu_owner.clone(),
+            vram_full: observation
+                .vram
+                .is_some_and(|vram| vram.is_full(policy.vram_full_fraction)),
+            now: at,
+            cooldown_until: self.cooldown_until,
+            tenants: observation.tenants.clone(),
+            signals: observation.signals.clone(),
+        };
+        let ladder = decide_ladder(&input, &policy);
+        let mut events = Vec::new();
+        let mut plan = None;
+        let mut restore = None;
+        if let LadderDecision::ScaleLowestPriorityToZero {
+            tenant,
+            ladder: rung,
+            signal,
+        } = &ladder
+        {
+            self.table.shed.retain(|shed| &shed.tenant != tenant);
+            self.table.shed.push(ShedTenant {
+                tenant: tenant.clone(),
+                ladder: *rung,
+                replicas: 0,
+                at,
+                vram_used_at_shed: observation.vram.map(|vram| vram.used_bytes),
+                freed_bytes: None,
+            });
+            self.cooldown_until = policy.cooldown_until(at);
+            events.push(self.log.emit(
+                at,
+                "gpu.tenant_shed",
+                Subject::Tenant(tenant.clone()),
+                Severity::Warn,
+                serde_json::json!({"tenant": tenant, "ladder": rung, "signal": signal, "vram": observation.vram}),
+            ));
+            plan = Some(shed_plan(tenant, *rung));
+            changed = true;
+        } else {
+            let decision = decide_restore(
+                &self.table.gpu_owner,
+                observation,
+                &self.table.shed,
+                at,
+                self.cooldown_until,
+                &policy,
+            );
+            if let RestoreDecision::Restore {
+                tenant,
+                ladder: rung,
+                replicas,
+            } = &decision
+            {
+                self.table.shed.retain(|shed| &shed.tenant != tenant);
+                self.cooldown_until = policy.cooldown_until(at);
+                events.push(self.log.emit(
+                    at,
+                    "gpu.tenant_restored",
+                    Subject::Tenant(tenant.clone()),
+                    Severity::Info,
+                    serde_json::json!({"tenant": tenant, "ladder": rung, "replicas": replicas, "vram": observation.vram}),
+                ));
+                plan = Some(restore_plan(tenant, *rung, *replicas));
+                changed = true;
+            }
+            restore = Some(decision);
+        }
+        if changed {
+            self.store
+                .save(&self.table)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(PressureOutcome {
+            ladder,
+            restore,
+            restart_plugin: false,
+            plan,
+            events,
+        })
+    }
+
     /// Replace the displaced list of the current guest owner's custodian holder
-    /// and save the table. Returns the holder's identifier.
+    /// and save the table. Returns the holder's identifier. While the host owns
+    /// the card the list is a ladder shed's: the counts go to the shed list.
     fn record_displaced(&mut self, displaced: Vec<DisplacedTenant>) -> Result<String, String> {
         let Some(owner) = self.table.gpu_owner.guest().cloned() else {
-            return Err("the host kernel holds the card; nothing was displaced".to_owned());
+            let mut recorded = false;
+            for counted in &displaced {
+                if let Some(shed) = self
+                    .table
+                    .shed
+                    .iter_mut()
+                    .find(|shed| shed.tenant == counted.tenant)
+                {
+                    shed.replicas = counted.replicas;
+                    recorded = true;
+                }
+            }
+            if !recorded {
+                return Err("the host kernel holds the card; nothing was displaced".to_owned());
+            }
+            self.store
+                .save(&self.table)
+                .map_err(|error| error.to_string())?;
+            return Ok("shed".to_owned());
         };
         let Some(holder) =
             self.table.holders.iter_mut().find(|holder| {
@@ -419,6 +593,8 @@ pub fn start(config: Config) -> Result<Running, ServeError> {
         store,
         log,
         subscribers: Vec::new(),
+        cooldown_until: Timestamp::from_millis(0),
+        guard_cooldown_until: Timestamp::from_millis(0),
     }));
     let stopped = Arc::new(AtomicBool::new(false));
     let mut bound = Vec::new();
@@ -608,6 +784,34 @@ fn serve_connection(shared: Arc<Mutex<Inner>>, stream: UnixStream, channel: Chan
                 } else {
                     Reply::Error {
                         message: "completed is accepted on the local socket only".to_owned(),
+                    }
+                };
+                if send(&mut writer, &reply).is_err() {
+                    return;
+                }
+            }
+            Request::Pressure { observation } => {
+                let reply = if channel == Channel::Local {
+                    let mut inner = lock(&shared);
+                    match inner.pressure(&observation) {
+                        Ok(outcome) => {
+                            if let Some(plan) = outcome.plan {
+                                inner.broadcast(&Reply::Granted { plan });
+                            }
+                            if !outcome.events.is_empty() {
+                                inner.publish(&outcome.events);
+                            }
+                            Reply::Pressure {
+                                ladder: outcome.ladder,
+                                restore: outcome.restore,
+                                restart_plugin: outcome.restart_plugin,
+                            }
+                        }
+                        Err(message) => Reply::Error { message },
+                    }
+                } else {
+                    Reply::Error {
+                        message: "pressure is accepted on the local socket only".to_owned(),
                     }
                 };
                 if send(&mut writer, &reply).is_err() {

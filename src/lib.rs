@@ -40,6 +40,7 @@ pub mod engine;
 pub mod facts;
 pub mod gpu;
 pub mod holders;
+pub mod ladder;
 pub mod memory;
 pub mod plan;
 pub mod policy;
@@ -61,11 +62,18 @@ pub use gpu::{
     LadderDecision, LadderHold, LadderInput, StarvationSignal, TenantState, VramFacts,
 };
 pub use holders::{Holder, HolderState, HolderStore, HolderTable, StoreError};
+pub use ladder::{
+    PressureObservation, RestoreDecision, RestoreHold, ShedTenant, decide_guard, decide_restore,
+    measure_freed,
+};
 pub use memory::{
     MemoryAdmission, MemoryDecision, MemoryHeadroom, MemoryRefusal, decide_memory,
     decide_memory_with_credit, pressure_allows_swap,
 };
-pub use plan::{PlanStep, SwitchOutcome, SwitchPlan, SwitchRefusal, plan_switch};
+pub use plan::{
+    PlanStep, SwitchOutcome, SwitchPlan, SwitchRefusal, guard_plan, plan_switch, restore_plan,
+    shed_plan,
+};
 pub use policy::{GpuPolicy, MemoryPolicy, Policy, PolicyError, SwapPolicy};
 pub use protocol::{
     Availability, Channel, HolderSummary, Reply, Request, Status as DaemonStatus, TargetStatus,

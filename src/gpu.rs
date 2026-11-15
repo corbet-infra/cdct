@@ -324,9 +324,12 @@ pub fn decide_ladder(input: &LadderInput, policy: &GpuPolicy) -> LadderDecision 
             reason: LadderHold::CardNotFull,
         };
     }
+    // A registration zombie is cured by restarting the device plugin
+    // ([`crate::ladder::decide_guard`]), never by shedding a tenant.
     let Some(signal) = input
         .signals
         .iter()
+        .filter(|signal| !matches!(signal, StarvationSignal::RegistrationZombie { .. }))
         .filter(|signal| signal.is_graced(policy))
         .max_by_key(|signal| signal.priority(policy))
     else {

@@ -13,8 +13,9 @@ use cdrv::{Event, InstanceClass, InstanceId, KernelOwner};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::gpu::DisplacedTenant;
+use crate::gpu::{DisplacedTenant, LadderDecision};
 use crate::holders::HolderState;
+use crate::ladder::{PressureObservation, RestoreDecision};
 use crate::memory::MemoryRefusal;
 use crate::plan::{SwitchOutcome, SwitchPlan, SwitchRefusal};
 
@@ -55,6 +56,14 @@ pub enum Request {
     Completed {
         /// The kernel the completed plan gave the card to.
         target: KernelOwner,
+    },
+    /// The executor observed the card at an event (a GPU pod, the node or the
+    /// model broker changed). The daemon runs the live ladder on it and, for a
+    /// shed or a restore, pushes the plan as [`Reply::Granted`]. Only the
+    /// local socket may send it: a guest never reports the host's card.
+    Pressure {
+        /// What the executor observed.
+        observation: PressureObservation,
     },
 }
 
@@ -199,6 +208,16 @@ pub enum Reply {
     Completed {
         /// Who owns the card now.
         owner: KernelOwner,
+    },
+    /// The answer to [`Request::Pressure`]: what the ladder decided.
+    Pressure {
+        /// The shed decision.
+        ladder: LadderDecision,
+        /// The restore decision, taken when nothing is shed.
+        restore: Option<RestoreDecision>,
+        /// Whether the device plugin is restarted (a lost registration).
+        #[serde(default)]
+        restart_plugin: bool,
     },
     /// One pushed state change.
     Event {

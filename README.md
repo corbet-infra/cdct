@@ -155,7 +155,7 @@ Windows).
 ## Protocol
 
 One JSON message per line. A request is `status`, `plan_switch`, `switch`,
-`subscribe`, `record_displaced` or `completed`:
+`subscribe`, `record_displaced`, `completed` or `pressure`:
 
 ```json
 {"request":"status"}
@@ -183,6 +183,31 @@ until `completed` with `"target":"host"` releases it. A return that fails half
 way can therefore be asked for again (`cdct switch linux` plans it anew, every
 step of it is safe to repeat). The answer is
 `{"reply":"completed","owner":"host"}`.
+
+`pressure` is the executor's report of what it observed on the card at an
+event (local socket only): `{"request":"pressure","observation":{"vram":...,
+"tenants":[...],"signals":[...]}}`, each signal carrying how many consecutive
+observations it has lasted. The daemon runs the live ladder on it, at the event
+and never on a timer:
+
+- **guard**: a guarded resource read zero for `guard_grace_ticks` (5)
+  observations while the host owns the card means the device plugin lost its
+  registration; the grant is one `restart_device_plugin` step, then
+  `guard_cooldown_secs` (300 s). A registration zombie never sheds a tenant.
+- **shed**: `decide_ladder` names the lowest running tenant below a graced
+  starvation signal while the card is above `vram_full_fraction`; the grant is
+  one `stop_host_tenant` step (the tenant is listed as displaced, so the
+  executor records its live replica count with `record_displaced`, which the
+  daemon stores in the table's `shed` list while the host owns the card), then
+  `cooldown_secs` (18 s).
+- **restore**: the first observation after a shed's cooldown measures what it
+  freed (the VRAM in use at the shed minus the VRAM in use now). A shed tenant
+  returns, highest rung first and one per cooldown, when no signal is graced,
+  the card is not full and that much VRAM is free again; the grant is one
+  `start_host_tenant` step with the recorded replicas.
+
+Every grant reaches the executor as `granted`, like a switch. The answer is
+`{"reply":"pressure","ladder":...,"restore":...,"restart_plugin":false}`.
 
 A single question receives one `status`, `plan` or `switch` reply, or an
 `error`. A subscription first receives a `subscribed` reply (its channel

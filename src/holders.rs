@@ -19,6 +19,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::gpu::{DisplacedTenant, KernelOwner};
+use crate::ladder::ShedTenant;
 
 /// What a holder is allowed to do with what it was granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,6 +84,9 @@ pub struct HolderTable {
     pub gpu_owner: KernelOwner,
     /// Every holder.
     pub holders: Vec<Holder>,
+    /// The host tenants the live ladder scaled to zero, until they return.
+    #[serde(default)]
+    pub shed: Vec<ShedTenant>,
 }
 
 impl Default for HolderTable {
@@ -91,6 +95,7 @@ impl Default for HolderTable {
             seq: 0,
             gpu_owner: KernelOwner::Host,
             holders: Vec::new(),
+            shed: Vec::new(),
         }
     }
 }

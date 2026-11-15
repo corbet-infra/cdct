@@ -565,3 +565,136 @@ fn recording_needs_a_guest_that_holds_the_card() {
         .expect_err("the host owns the card");
     assert!(error.to_string().contains("host kernel"), "{error}");
 }
+
+fn ladder_observation(used_gib: u64, starved: bool) -> cdct::PressureObservation {
+    let gib = 1_u64 << 30;
+    cdct::PressureObservation {
+        vram: Some(cdct::VramFacts {
+            used_bytes: used_gib * gib,
+            total_bytes: 16 * gib,
+        }),
+        tenants: vec![
+            cdct::GpuTenant {
+                id: "llm/broker".to_owned(),
+                ladder: GpuLadder::Interactive,
+                state: if starved {
+                    cdct::TenantState::NotReady
+                } else {
+                    cdct::TenantState::Running
+                },
+            },
+            cdct::GpuTenant {
+                id: "render/farm".to_owned(),
+                ladder: GpuLadder::BestEffort,
+                state: if starved {
+                    cdct::TenantState::Running
+                } else {
+                    cdct::TenantState::Stopped
+                },
+            },
+        ],
+        signals: if starved {
+            vec![cdct::StarvationSignal::PodNotReady {
+                tenant: "llm/broker".to_owned(),
+                ladder: GpuLadder::Interactive,
+                starved_ticks: 2,
+            }]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+#[test]
+fn the_live_ladder_sheds_records_the_count_and_restores_when_the_vram_is_free() {
+    let tree = TempTree::new("daemon-ladder");
+    let mut config = configuration(&tree, 64 * GIB_MIB);
+    // No cooldown, so the restore can follow in the same test.
+    config.policy.gpu.cooldown_secs = 0;
+    let running = cdct::daemon::start(config).expect("the daemon starts");
+    let mut executor = connect(running.local_socket());
+    executor.send(&Request::Subscribe).expect("subscribe");
+    assert!(matches!(
+        executor.receive().expect("the snapshot"),
+        Some(Reply::Subscribed { .. })
+    ));
+    let mut reporter = connect(running.local_socket());
+
+    // 15 of 16 GiB in use and the broker starved: the best-effort tenant goes.
+    let (ladder, restore, _) = reporter
+        .pressure(&ladder_observation(15, true))
+        .expect("the observation is answered");
+    assert!(
+        matches!(&ladder, cdct::LadderDecision::ScaleLowestPriorityToZero { tenant, .. } if tenant == "render/farm"),
+        "{ladder:?}"
+    );
+    assert_eq!(restore, None);
+    let Some(Reply::Granted { plan }) = executor.receive().expect("the shed plan") else {
+        panic!("the executor receives the shed plan first");
+    };
+    assert_eq!(plan.target, KernelOwner::Host);
+    assert_eq!(
+        plan.steps,
+        vec![PlanStep::StopHostTenant {
+            tenant: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+        }]
+    );
+    // The executor records the live count before the stop.
+    reporter
+        .record_displaced(&[DisplacedTenant {
+            tenant: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+            replicas: 2,
+        }])
+        .expect("the count is recorded with the shed");
+    let table = read_table(tree.path().join("holders.json"))
+        .expect("the table reads")
+        .expect("the table exists");
+    assert_eq!(table.shed.len(), 1);
+    assert_eq!(table.shed[0].replicas, 2);
+
+    // The pressure is gone and 4 GiB were freed: 10 of 16 GiB in use leaves room.
+    let (_, restore, _) = reporter
+        .pressure(&ladder_observation(11, false))
+        .expect("the observation is answered");
+    assert_eq!(
+        restore,
+        Some(cdct::RestoreDecision::Restore {
+            tenant: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+            replicas: 2,
+        })
+    );
+    let plan = loop {
+        match executor.receive().expect("the stream continues") {
+            Some(Reply::Granted { plan }) => break plan,
+            Some(_) => {}
+            None => panic!("the stream ended before the restore plan"),
+        }
+    };
+    assert_eq!(
+        plan.steps,
+        vec![PlanStep::StartHostTenant {
+            tenant: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+            replicas: 2,
+        }]
+    );
+    let table = read_table(tree.path().join("holders.json"))
+        .expect("the table reads")
+        .expect("the table exists");
+    assert!(table.shed.is_empty());
+}
+
+#[test]
+fn a_guest_channel_cannot_report_pressure() {
+    let tree = TempTree::new("daemon-ladder-guest");
+    let running = start(&tree, 64 * GIB_MIB);
+    let channel = running
+        .guest_socket(&InstanceId::from("mac"))
+        .expect("the guest channel")
+        .to_path_buf();
+    let mut guest_side = connect(&channel);
+    assert!(guest_side.pressure(&ladder_observation(15, true)).is_err());
+}

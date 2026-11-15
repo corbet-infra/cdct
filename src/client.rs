@@ -172,6 +172,32 @@ impl Client {
         }
     }
 
+    /// Report what the executor observed on the card and return the ladder's
+    /// shed decision, its restore decision when nothing is shed, and whether
+    /// the device plugin is restarted. Local socket only.
+    pub fn pressure(
+        &mut self,
+        observation: &crate::ladder::PressureObservation,
+    ) -> Result<
+        (
+            crate::gpu::LadderDecision,
+            Option<crate::ladder::RestoreDecision>,
+            bool,
+        ),
+        ClientError,
+    > {
+        match self.ask(&Request::Pressure {
+            observation: observation.clone(),
+        })? {
+            Reply::Pressure {
+                ladder,
+                restore,
+                restart_plugin,
+            } => Ok((ladder, restore, restart_plugin)),
+            other => Err(ClientError::Unexpected(reply_name(&other))),
+        }
+    }
+
     /// Ask for a switch and return the decision.
     pub fn switch(&mut self, target: &cdrv::KernelOwner) -> Result<Reply, ClientError> {
         self.ask(&Request::Switch {
@@ -236,6 +262,7 @@ fn reply_name(reply: &Reply) -> &'static str {
         Reply::Granted { .. } => "granted",
         Reply::Recorded { .. } => "recorded",
         Reply::Completed { .. } => "completed",
+        Reply::Pressure { .. } => "pressure",
         Reply::Event { .. } => "event",
         Reply::Error { .. } => "error",
     }

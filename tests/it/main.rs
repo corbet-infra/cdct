@@ -24,6 +24,7 @@ use fs2::FileExt;
 mod config;
 #[cfg(unix)]
 mod daemon;
+mod ladder;
 mod protocol;
 mod tray;
 
@@ -411,6 +412,9 @@ fn assert_one_kernel_plan(outcome: &SwitchOutcome, from: &KernelOwner, to: &Kern
                 );
             }
             PlanStep::HandOverCard { .. } => {}
+            PlanStep::RestartDevicePlugin => {
+                panic!("a switch plan never restarts the device plugin: {steps:?}")
+            }
             PlanStep::SunshineFollows { kernel } => {
                 // A guest plan moves Sunshine right before the hand-over; a
                 // host plan ends with it.
@@ -953,6 +957,17 @@ fn starvation_signals() -> Vec<StarvationSignal> {
 fn the_ladder_decides_under_each_starvation_signal() {
     for signal in starvation_signals() {
         let decision = conductor().ladder(&ladder_input(vec![signal.clone()]));
+        if matches!(signal, StarvationSignal::RegistrationZombie { .. }) {
+            // A lost device plugin registration is cured by a plugin restart
+            // (`decide_guard`), never by shedding a tenant.
+            assert_eq!(
+                decision,
+                LadderDecision::None {
+                    reason: LadderHold::NoGracedSignal
+                }
+            );
+            continue;
+        }
         assert_eq!(
             decision,
             LadderDecision::ScaleLowestPriorityToZero {
@@ -960,7 +975,7 @@ fn the_ladder_decides_under_each_starvation_signal() {
                 ladder: GpuLadder::BestEffort,
                 signal,
             },
-            "every signal sheds the lowest-priority tenant"
+            "every starvation signal sheds the lowest-priority tenant"
         );
     }
 }
@@ -1032,9 +1047,10 @@ fn the_ladder_resumes_once_the_cooldown_deadline_has_passed() {
         LadderDecision::ScaleLowestPriorityToZero {
             tenant: "comfyui".to_owned(),
             ladder: GpuLadder::BestEffort,
-            signal: StarvationSignal::RegistrationZombie {
-                resource: "example.com/gpu-slot".to_owned(),
-                starved_ticks: 5,
+            signal: StarvationSignal::DesktopGttSpill {
+                gtt_used_bytes: 2 * GIB_BYTES,
+                gtt_previous_bytes: GIB_BYTES,
+                starved_ticks: 2,
             },
         },
         "the ladder acts again at the deadline"
