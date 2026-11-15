@@ -67,6 +67,16 @@ plan, the Windows office-before-desktop rule, the reverse plan in ladder order,
 the ladder under each starvation signal, crash reconcile, and the holder store's
 single writer.
 
+### One `cdrv`
+
+`Cargo.toml` names `cdrv` by its git URL, so this crate builds from the URL
+alone. During local development a `[patch]` table resolves that URL to the
+sibling `../cdrv` checkout, so `cdct`, `cwld` and `cdrv` are always compiled
+against the same contract at the same commit. To build against the published
+contract instead, delete the `[patch."https://git.corbet.ch/corbet-infra/cdrv.git"]`
+table and let cargo fetch `cdrv` from the URL; the URL must carry the contract
+commit the code is written against.
+
 ## License
 
 `LGPL-3.0-only WITH LGPL-3.0-linking-exception`; see `LICENSE`.
