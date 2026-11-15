@@ -478,7 +478,16 @@ fn recorded_replica_counts_reach_the_switch_back_and_survive_a_restart() {
 
     drop(client);
     drop(running);
-    let running = cdct::daemon::start(config).expect("the daemon restarts");
+    // A connection thread may still hold the old daemon's state for a moment
+    // after the drop; the lock frees as soon as it sees the closed socket.
+    let running = (0..200)
+        .find_map(|_| {
+            cdct::daemon::start(config.clone()).ok().or_else(|| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                None
+            })
+        })
+        .expect("the daemon restarts");
     let mut client = connect(running.local_socket());
     let back = plan_of(
         &mut client,
