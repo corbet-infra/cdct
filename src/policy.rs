@@ -4,6 +4,7 @@
 //! these values as JSON (the CLI's `--policy`); a missing field keeps its
 //! default, so a file names only what the deployment changes.
 
+use cdrv::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// Everything one deployment may tune.
@@ -73,14 +74,27 @@ pub struct GpuPolicy {
     pub gtt_delta_bytes: u64,
     /// Ticks a tenant must stay starved before it justifies a kill.
     pub grace_ticks: u32,
-    /// Ticks to wait after a kill for the freed VRAM to land.
-    pub cooldown_ticks: u32,
-    /// Seconds per tick; cooldowns are counted in ticks.
-    pub tick_seconds: u32,
+    /// How long after a reclaim the ladder waits for the freed VRAM to land.
+    pub cooldown_secs: u64,
     /// The synthetic priority of the desktop session; above the top ladder rung.
     pub desktop_priority: u32,
     /// The synthetic priority of the broker model-load starvation signal.
     pub broker_priority: u32,
+}
+
+impl GpuPolicy {
+    /// The instant a reclaim at `reclaimed_at` finishes its cooldown.
+    ///
+    /// The daemon is event-driven, so the cooldown is a deadline in time, not a
+    /// count of ticks nobody is guaranteed to deliver.
+    #[must_use]
+    pub fn cooldown_until(&self, reclaimed_at: Timestamp) -> Timestamp {
+        Timestamp::from_millis(
+            reclaimed_at
+                .as_millis()
+                .saturating_add(self.cooldown_secs.saturating_mul(1000)),
+        )
+    }
 }
 
 impl Default for GpuPolicy {
@@ -89,8 +103,7 @@ impl Default for GpuPolicy {
             vram_full_fraction: 0.85,
             gtt_delta_bytes: 64 * 1024 * 1024,
             grace_ticks: 2,
-            cooldown_ticks: 3,
-            tick_seconds: 6,
+            cooldown_secs: 18,
             desktop_priority: 2_000_000,
             broker_priority: 1_000,
         }

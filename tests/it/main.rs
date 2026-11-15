@@ -835,7 +835,8 @@ fn ladder_input(signals: Vec<StarvationSignal>) -> LadderInput {
     LadderInput {
         owner: KernelOwner::Host,
         vram_full: true,
-        cooldown_ticks: 0,
+        now: Timestamp::from_secs(100),
+        cooldown_until: Timestamp(0),
         tenants: vec![
             tenant("archlxc", GpuLadder::Desktop, TenantState::Running),
             tenant("llm", GpuLadder::Interactive, TenantState::Running),
@@ -927,14 +928,50 @@ fn the_ladder_does_nothing_when_the_card_is_not_full() {
 }
 
 #[test]
-fn the_ladder_waits_for_the_kill_cooldown() {
+fn the_ladder_waits_until_the_reclaim_cooldown_deadline() {
     let mut input = ladder_input(starvation_signals());
-    input.cooldown_ticks = 3;
+    // The decision is made at 100 s; the cooldown runs until 130 s.
+    input.cooldown_until = Timestamp::from_secs(130);
     assert_eq!(
         conductor().ladder(&input),
         LadderDecision::None {
-            reason: LadderHold::Cooldown { remaining_ticks: 3 }
+            reason: LadderHold::Cooldown {
+                until: Timestamp::from_secs(130)
+            }
         }
+    );
+}
+
+#[test]
+fn the_ladder_resumes_once_the_cooldown_deadline_has_passed() {
+    let mut input = ladder_input(starvation_signals());
+    input.now = Timestamp::from_secs(130);
+    input.cooldown_until = Timestamp::from_secs(130);
+    assert_eq!(
+        conductor().ladder(&input),
+        LadderDecision::ScaleLowestPriorityToZero {
+            tenant: "comfyui".to_owned(),
+            ladder: GpuLadder::BestEffort,
+            signal: StarvationSignal::RegistrationZombie {
+                resource: "example.com/gpu-slot".to_owned(),
+                starved_ticks: 5,
+            },
+        },
+        "the ladder acts again at the deadline"
+    );
+}
+
+#[test]
+fn the_cooldown_deadline_is_policy_time_not_ticks() {
+    let policy = Policy::default().gpu;
+    assert_eq!(policy.cooldown_secs, 18);
+    assert_eq!(
+        policy.cooldown_until(Timestamp::from_secs(10)),
+        Timestamp::from_secs(28)
+    );
+    assert_eq!(
+        policy.cooldown_until(Timestamp::from_millis(1_500)),
+        Timestamp::from_millis(19_500)
     );
 }
 

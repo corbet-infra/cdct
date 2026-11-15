@@ -5,7 +5,7 @@
 //! decision that names the lowest-priority running tenant to scale to zero;
 //! `cdct` never performs the scale, the bounce or any other device action.
 
-use cdrv::{GuestOs, InstanceClass, InstanceId, InstanceState};
+use cdrv::{GuestOs, InstanceClass, InstanceId, InstanceState, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::policy::GpuPolicy;
@@ -309,8 +309,10 @@ pub struct LadderInput {
     pub owner: KernelOwner,
     /// Whether VRAM is above the full fraction.
     pub vram_full: bool,
-    /// Ticks left in the post-kill cooldown.
-    pub cooldown_ticks: u32,
+    /// The instant this decision is made at.
+    pub now: Timestamp,
+    /// The instant the post-reclaim cooldown ends; the ladder holds until then.
+    pub cooldown_until: Timestamp,
     /// The host-side tenants.
     pub tenants: Vec<GpuTenant>,
     /// The starvation signals observed this tick.
@@ -343,10 +345,10 @@ pub enum LadderDecision {
 pub enum LadderHold {
     /// The card belongs to a guest; host tenants do not share it.
     NotHostOwned,
-    /// A previous kill is still landing.
+    /// A previous reclaim is still landing.
     Cooldown {
-        /// Ticks left.
-        remaining_ticks: u32,
+        /// When the cooldown ends.
+        until: Timestamp,
     },
     /// The card is not full, so no pressure is real.
     CardNotFull,
@@ -370,10 +372,10 @@ pub fn decide_ladder(input: &LadderInput, policy: &GpuPolicy) -> LadderDecision 
             reason: LadderHold::NotHostOwned,
         };
     }
-    if input.cooldown_ticks > 0 {
+    if input.now < input.cooldown_until {
         return LadderDecision::None {
             reason: LadderHold::Cooldown {
-                remaining_ticks: input.cooldown_ticks,
+                until: input.cooldown_until,
             },
         };
     }
