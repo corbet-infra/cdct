@@ -128,6 +128,10 @@ pub struct InstanceObservation {
     /// stopped instance holds none.
     #[serde(default)]
     pub resident_mib: Option<u64>,
+    /// The install (disk) identity it boots from. Two profiles on one install
+    /// never run together; profiles on different installs are unrelated.
+    #[serde(default)]
+    pub install: Option<String>,
 }
 
 /// A host tenant a guest switch stopped, kept so the switch back restores

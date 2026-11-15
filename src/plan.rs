@@ -9,7 +9,9 @@ use cdrv::{GuestOs, InstanceClass, InstanceId, StopMode};
 use serde::{Deserialize, Serialize};
 
 use crate::facts::MemorySnapshot;
-use crate::gpu::{DisplacedTenant, GpuState, GpuTenant, KernelOwner, TenantState};
+use crate::gpu::{
+    DisplacedTenant, GpuState, GpuTenant, InstanceObservation, KernelOwner, TenantState,
+};
 use crate::memory::{MemoryAdmission, MemoryDecision, MemoryRefusal, decide_memory_with_credit};
 use crate::policy::Policy;
 
@@ -187,15 +189,15 @@ fn guest_plan(
     // resident memory is credited to the admission, because the plan frees it
     // before the target needs it.
     let current = gpu.owner.guest().filter(|current| *current != id);
-    let offices: Vec<&InstanceId> = if observed.guest_os == GuestOs::Windows {
-        running_office_profiles(gpu)
+    let offices: Vec<&InstanceObservation> = if observed.guest_os == GuestOs::Windows {
+        paired_office_profiles(gpu, observed.install.as_deref())
     } else {
         Vec::new()
     };
     let credited_mib = current
         .and_then(|current| gpu.instance(current))
         .into_iter()
-        .chain(offices.iter().filter_map(|office| gpu.instance(office)))
+        .chain(offices.iter().copied())
         .filter(|instance| instance.state.is_live())
         .filter_map(|instance| instance.resident_mib)
         .fold(0_u64, u64::saturating_add);
@@ -235,7 +237,7 @@ fn guest_plan(
     }
     for office in &offices {
         steps.push(PlanStep::StopInstance {
-            instance: (*office).clone(),
+            instance: office.id.clone(),
             mode: StopMode::Clean,
         });
     }
@@ -309,10 +311,24 @@ fn host_tenants_lowest_first(gpu: &GpuState) -> Vec<&GpuTenant> {
     tenants
 }
 
-fn running_office_profiles(gpu: &GpuState) -> Vec<&InstanceId> {
+/// The live office profiles that share the target's install.
+///
+/// Pairing is by install (disk), never by guest OS: two Windows installs are
+/// unrelated and must not stop each other's profile. A target with no known
+/// install pairs with nothing.
+fn paired_office_profiles<'a>(
+    gpu: &'a GpuState,
+    install: Option<&str>,
+) -> Vec<&'a InstanceObservation> {
+    let Some(install) = install else {
+        return Vec::new();
+    };
     gpu.instances
         .iter()
-        .filter(|instance| instance.class == InstanceClass::Office && instance.state.is_live())
-        .map(|instance| &instance.id)
+        .filter(|instance| {
+            instance.class == InstanceClass::Office
+                && instance.state.is_live()
+                && instance.install.as_deref() == Some(install)
+        })
         .collect()
 }

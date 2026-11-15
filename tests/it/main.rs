@@ -112,10 +112,22 @@ fn observation(
         state,
         memory_mib: None,
         resident_mib: None,
+        install: None,
+    }
+}
+
+fn windows_install(id: &str, class: InstanceClass, install: &str) -> InstanceObservation {
+    InstanceObservation {
+        install: Some(install.to_owned()),
+        ..observation(id, class, GuestOs::Windows, InstanceState::Stopped)
     }
 }
 
 fn host_gpu() -> GpuState {
+    let mut office = windows_install("office", InstanceClass::Office, "win-ssd");
+    office.state = InstanceState::Running;
+    let mut other_office = windows_install("office-other", InstanceClass::Office, "win-other");
+    other_office.state = InstanceState::Running;
     GpuState {
         device: "example-gpu".to_owned(),
         owner: KernelOwner::Host,
@@ -136,18 +148,10 @@ fn host_gpu() -> GpuState {
                 GuestOs::MacOs,
                 InstanceState::Stopped,
             ),
-            observation(
-                "windows-desktop",
-                InstanceClass::Desktop,
-                GuestOs::Windows,
-                InstanceState::Stopped,
-            ),
-            observation(
-                "office",
-                InstanceClass::Office,
-                GuestOs::Windows,
-                InstanceState::Running,
-            ),
+            windows_install("windows-desktop", InstanceClass::Desktop, "win-ssd"),
+            windows_install("windows-other", InstanceClass::Desktop, "win-other"),
+            office,
+            other_office,
             observation(
                 "dev",
                 InstanceClass::Dev,
@@ -620,6 +624,43 @@ fn a_switch_to_a_non_desktop_instance_is_declined() {
                 class: InstanceClass::Dev,
             },
         }
+    );
+}
+
+#[test]
+fn office_pairing_is_by_install_not_by_guest_os() {
+    // Two Windows installs, each with its office profile running. Switching to
+    // one desktop stops only the office profile on the same install.
+    let outcome = switch(
+        &guest("windows-desktop"),
+        &host_gpu(),
+        &snapshot(40 * GIB_MIB),
+    );
+    let stopped = steps(&outcome)
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::StopInstance { instance, .. } => Some(instance.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>();
+    assert_eq!(stopped, vec!["office"], "only win-ssd's office stops");
+
+    let outcome = switch(
+        &guest("windows-other"),
+        &host_gpu(),
+        &snapshot(40 * GIB_MIB),
+    );
+    let stopped = steps(&outcome)
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::StopInstance { instance, .. } => Some(instance.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>();
+    assert_eq!(
+        stopped,
+        vec!["office-other"],
+        "only win-other's office stops"
     );
 }
 
