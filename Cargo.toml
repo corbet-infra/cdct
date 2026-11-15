@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
 description = "The conductor: one decision engine for RAM, CPU quotas and the exclusive GPU"
-repository = "https://github.com/corbet-infra/cdct"
+repository = "https://git.corbet.ch/corbet-infra/cdct"
 
 [lib]
 name = "cdct"
@@ -15,7 +15,7 @@ name = "cdct"
 path = "src/main.rs"
 
 [dependencies]
-cdrv = { path = "../cdrv" }
+cdrv = { git = "https://git.corbet.ch/corbet-infra/cdrv.git", branch = "main" }
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
