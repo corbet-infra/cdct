@@ -70,12 +70,10 @@ single writer.
 ### One `cdrv`
 
 `Cargo.toml` names `cdrv` by its git URL, so this crate builds from the URL
-alone. During local development a `[patch]` table resolves that URL to the
-sibling `../cdrv` checkout, so `cdct`, `cwld` and `cdrv` are always compiled
-against the same contract at the same commit. To build against the published
-contract instead, delete the `[patch."https://git.corbet.ch/corbet-infra/cdrv.git"]`
-table and let cargo fetch `cdrv` from the URL; the URL must carry the contract
-commit the code is written against.
+alone. To develop against a sibling checkout, pass a patch on the command line
+instead of committing one, for example
+`cargo --config 'patch."https://git.corbet.ch/corbet-infra/cdrv.git".cdrv.path="../cdrv"' test`.
+The URL must carry the contract commit the code is written against.
 
 ## License
 
