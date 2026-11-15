@@ -982,7 +982,11 @@ fn the_ladder_never_evicts_a_tenant_at_or_above_the_starved_priority() {
         ladder: GpuLadder::Interactive,
         starved_ticks: 2,
     }]);
-    input.tenants = vec![tenant("lxc-desktop", GpuLadder::Desktop, TenantState::Running)];
+    input.tenants = vec![tenant(
+        "lxc-desktop",
+        GpuLadder::Desktop,
+        TenantState::Running,
+    )];
     assert_eq!(
         conductor().ladder(&input),
         LadderDecision::None {
