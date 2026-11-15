@@ -97,6 +97,10 @@ SocketMode=0660
 SocketGroup=cdct
 ```
 
+An inherited socket keeps the mode and group of its unit: the daemon's own
+`socket_mode` and `socket_gid` apply only to sockets it binds itself (and to the
+guest channels).
+
 ### The CLI
 
 ```sh

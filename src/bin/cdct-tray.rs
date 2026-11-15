@@ -62,7 +62,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `--config <path>` or `--config=<path>`; the only option the tray takes.
+fn config_argument() -> Option<std::path::PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--config" {
+            return args.next().map(Into::into);
+        }
+        if let Some(value) = arg.to_str().and_then(|a| a.strip_prefix("--config=")) {
+            return Some(value.into());
+        }
+    }
+    None
+}
+
 fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
+    if let Some(path) = config_argument() {
+        return Ok(Config::load(&path)?);
+    }
     match Config::default_path() {
         Some(path) if path.exists() => Ok(Config::load(&path)?),
         _ => Ok(Config::default()),

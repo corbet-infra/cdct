@@ -13,8 +13,8 @@ use cdct::client::{Client, Endpoint};
 use cdct::config::Config;
 use cdct::protocol::{Reply, Request};
 use cdct::{
-    Conductor, FactsFile, GpuState, KernelOwner, MemorySnapshot, Policy, ProcReader, SwitchOutcome,
-    describe, holders::read_table,
+    Conductor, FactsFile, GpuState, MemorySnapshot, Policy, ProcReader, SwitchOutcome, describe,
+    holders::read_table,
 };
 use clap::{Parser, Subcommand};
 use serde::Serialize;
@@ -80,9 +80,9 @@ enum Command {
 enum PlanCommand {
     /// Plan a switch of the card to a kernel, offline.
     Switch {
-        /// `host` or `guest:<instance>`.
-        #[arg(value_parser = parse_kernel)]
-        kernel: KernelOwner,
+        /// A configured target name (`macos`, `windows`, `linux`), `host` or
+        /// `guest:<instance>`.
+        kernel: String,
         /// A JSON facts document; without it, live `/proc` facts are read and
         /// the card's owner comes from the holder table.
         #[arg(long)]
@@ -91,18 +91,6 @@ enum PlanCommand {
         #[arg(long)]
         json: bool,
     },
-}
-
-fn parse_kernel(value: &str) -> Result<KernelOwner, String> {
-    if value == "host" {
-        return Ok(KernelOwner::Host);
-    }
-    match value.strip_prefix("guest:") {
-        Some(id) if !id.is_empty() => Ok(KernelOwner::Guest(cdrv::InstanceId::from(id))),
-        _ => Err(format!(
-            "kernel must be `host` or `guest:<instance>`, got {value:?}"
-        )),
-    }
 }
 
 fn main() -> ExitCode {
@@ -298,11 +286,15 @@ fn watch(cli: &Cli, json: bool) -> ExitCode {
     }
 }
 
-fn plan_switch(cli: &Cli, kernel: &KernelOwner, facts: Option<&Path>, json: bool) -> ExitCode {
+fn plan_switch(cli: &Cli, kernel: &str, facts: Option<&Path>, json: bool) -> ExitCode {
     let config = match load_config(cli.config.as_deref()) {
         Ok(config) => config,
         Err(error) => return fail(error),
     };
+    let Some(kernel) = config.resolve(kernel) else {
+        return fail(format!("unknown kernel `{kernel}`"));
+    };
+    let kernel = &kernel;
     let policy = match &cli.policy {
         Some(path) => match Policy::load(Some(path)) {
             Ok(policy) => policy,
