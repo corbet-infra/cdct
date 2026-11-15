@@ -176,3 +176,20 @@ fn a_malformed_line_is_an_error_not_a_panic() {
     assert!(protocol::decode::<Request>("not json").is_err());
     assert!(protocol::decode::<Request>(r#"{"request":"unknown"}"#).is_err());
 }
+
+#[test]
+fn a_granted_plan_is_tagged_granted_on_the_wire() {
+    let plan = cdct::SwitchPlan {
+        target: KernelOwner::Host,
+        memory: None,
+        displaced: Vec::new(),
+        steps: Vec::new(),
+    };
+    let reply = Reply::Granted { plan };
+    let line = protocol::encode(&reply).expect("the reply encodes");
+    assert!(line.starts_with(r#"{"reply":"granted","plan":{"#), "{line}");
+    assert_eq!(
+        protocol::decode::<Reply>(&line).expect("the reply decodes"),
+        reply
+    );
+}

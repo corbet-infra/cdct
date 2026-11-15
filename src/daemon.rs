@@ -578,6 +578,9 @@ fn serve_connection(shared: Arc<Mutex<Inner>>, stream: UnixStream, channel: Chan
                     let mut inner = lock(&shared);
                     match inner.switch(&target) {
                         Ok((outcome, events)) => {
+                            if let SwitchOutcome::Plan(plan) = &outcome {
+                                inner.broadcast(&Reply::Granted { plan: plan.clone() });
+                            }
                             inner.publish(&events);
                             Reply::Switch { outcome }
                         }

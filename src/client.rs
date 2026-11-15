@@ -205,6 +205,7 @@ fn reply_name(reply: &Reply) -> &'static str {
         Reply::Subscribed { .. } => "subscribed",
         Reply::Plan { .. } => "plan",
         Reply::Switch { .. } => "switch",
+        Reply::Granted { .. } => "granted",
         Reply::Event { .. } => "event",
         Reply::Error { .. } => "error",
     }

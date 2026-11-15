@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::holders::HolderState;
 use crate::memory::MemoryRefusal;
-use crate::plan::{SwitchOutcome, SwitchRefusal};
+use crate::plan::{SwitchOutcome, SwitchPlan, SwitchRefusal};
 
 /// A request from a client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub enum Request {
     /// Receive the current snapshot and every later state change.
     ///
     /// The first reply is [`Reply::Subscribed`]; afterwards the daemon pushes
-    /// one [`Reply::Event`] per change and a fresh [`Reply::Status`] after the
+    /// one [`Reply::Granted`] per granted switch, one [`Reply::Event`] per change and a fresh [`Reply::Status`] after the
     /// event that changed the state.
     Subscribe,
 }
@@ -165,6 +165,13 @@ pub enum Reply {
     Switch {
         /// The decision.
         outcome: SwitchOutcome,
+    },
+    /// A granted plan, pushed to every subscriber before the events and the
+    /// status of the change. An executor runs exactly the plans it receives
+    /// this way; the tray ignores it.
+    Granted {
+        /// The plan the switcher received.
+        plan: SwitchPlan,
     },
     /// One pushed state change.
     Event {

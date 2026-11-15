@@ -210,6 +210,10 @@ fn a_subscriber_receives_the_change_as_an_event_then_a_snapshot() {
     let mut actor = connect(running.local_socket());
     switch(&mut actor, guest("mac"));
 
+    assert!(matches!(
+        watcher.receive().expect("the granted plan arrives"),
+        Some(Reply::Granted { .. })
+    ));
     match watcher.receive().expect("the event arrives") {
         Some(Reply::Event { event }) => {
             assert_eq!(event.kind, "admission.granted");
@@ -229,6 +233,10 @@ fn a_subscriber_receives_the_change_as_an_event_then_a_snapshot() {
     assert_eq!(status.owner, guest("mac"));
 
     switch(&mut actor, KernelOwner::Host);
+    assert!(matches!(
+        watcher.receive().expect("the granted plan arrives"),
+        Some(Reply::Granted { .. })
+    ));
     match watcher.receive().expect("the release event arrives") {
         Some(Reply::Event { event }) => assert_eq!(event.kind, "holder.released"),
         other => panic!("expected the release event, got {other:?}"),
@@ -366,4 +374,66 @@ fn declared_tenants_are_displaced_and_restored_without_a_facts_file() {
         .collect();
     starts.sort_unstable();
     assert_eq!(starts, vec!["llm/broker", "render/farm"]);
+}
+
+#[test]
+fn a_subscriber_receives_the_granted_plan_before_the_events_and_the_status() {
+    let tree = TempTree::new("daemon-granted");
+    let mut config = configuration(&tree, 40 * GIB_MIB);
+    config.tenants = declared_tenants();
+    let running = cdct::daemon::start(config).expect("the daemon starts");
+    let mut watcher = connect(running.local_socket());
+    watcher
+        .send(&Request::Subscribe)
+        .expect("the subscription is sent");
+    assert!(matches!(
+        watcher.receive().expect("the subscription is answered"),
+        Some(Reply::Subscribed { .. })
+    ));
+
+    let mut actor = connect(running.local_socket());
+    let SwitchOutcome::Plan(given) = switch(&mut actor, guest("mac")) else {
+        panic!("expected a plan");
+    };
+
+    match watcher.receive().expect("the plan arrives") {
+        Some(Reply::Granted { plan }) => assert_eq!(plan, given),
+        other => panic!("expected the granted plan first, got {other:?}"),
+    }
+    assert!(matches!(
+        watcher.receive().expect("the event arrives"),
+        Some(Reply::Event { .. })
+    ));
+    assert!(matches!(
+        watcher.receive().expect("the status arrives"),
+        Some(Reply::Status { .. })
+    ));
+}
+
+#[test]
+fn a_switch_that_changes_nothing_pushes_no_granted_plan() {
+    let tree = TempTree::new("daemon-not-granted");
+    let running = start(&tree, 40 * GIB_MIB);
+    let mut watcher = connect(running.local_socket());
+    watcher
+        .send(&Request::Subscribe)
+        .expect("the subscription is sent");
+    watcher.receive().expect("the subscription is answered");
+
+    let mut actor = connect(running.local_socket());
+    assert!(matches!(
+        switch(&mut actor, KernelOwner::Host),
+        SwitchOutcome::AlreadyHeld { .. }
+    ));
+    switch(&mut actor, guest("mac"));
+    // The no-op switch pushed only a status; the first granted plan is the
+    // real grant.
+    assert!(matches!(
+        watcher.receive().expect("the status arrives"),
+        Some(Reply::Status { .. })
+    ));
+    assert!(matches!(
+        watcher.receive().expect("the grant arrives"),
+        Some(Reply::Granted { .. })
+    ));
 }

@@ -163,8 +163,12 @@ One JSON message per line. A request is `status`, `plan_switch`, `switch` or
 
 A single question receives one `status`, `plan` or `switch` reply, or an
 `error`. A subscription first receives a `subscribed` reply (its channel
-identifies the guest), then one `event` per change and a fresh `status` after
-the event that changed the state. The channel a request arrives on is the
+identifies the guest). When a `switch` from any client is granted, every
+subscriber then receives `{"reply":"granted","plan":{...}}` carrying the same
+plan the switcher got, before the `event` per change and the fresh `status`
+after the event that changed the state. An executor subscribes and runs exactly
+the plans it receives this way; the tray ignores `granted`, and `cdct watch`
+prints it like any other reply. The channel a request arrives on is the
 identity: `unix:`/`device:` carries no credential.
 
 ## How to run the tests
