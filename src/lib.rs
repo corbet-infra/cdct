@@ -47,7 +47,7 @@ pub use gpu::{
 pub use holders::{Holder, HolderState, HolderStore, HolderTable, StoreError};
 pub use memory::{
     MemoryAdmission, MemoryDecision, MemoryHeadroom, MemoryRefusal, decide_memory,
-    pressure_allows_swap,
+    decide_memory_with_credit, pressure_allows_swap,
 };
 pub use plan::{PlanStep, SwitchOutcome, SwitchPlan, SwitchRefusal, plan_switch};
 pub use policy::{GpuPolicy, MemoryPolicy, Policy, PolicyError, SwapPolicy};

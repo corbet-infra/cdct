@@ -124,6 +124,10 @@ pub struct InstanceObservation {
     pub state: InstanceState,
     /// Its fixed memory claim, when the class has one.
     pub memory_mib: Option<u64>,
+    /// The memory it currently holds, when the fact source reports it. A
+    /// stopped instance holds none.
+    #[serde(default)]
+    pub resident_mib: Option<u64>,
 }
 
 /// VRAM counters as the driver reads them from sysfs.

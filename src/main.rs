@@ -230,8 +230,12 @@ fn print_outcome(outcome: &SwitchOutcome) {
             println!("plan: switch the card to {}", plan.target);
             if let Some(memory) = &plan.memory {
                 println!(
-                    "  memory: {} MiB admitted ({} MiB available, {} MiB from swap)",
-                    memory.required_mib, memory.available_mib, memory.via_swap_mib
+                    "  memory: {} MiB admitted ({} MiB available, {} MiB freed by the plan, \
+                     {} MiB from swap)",
+                    memory.required_mib,
+                    memory.available_mib,
+                    memory.credited_mib,
+                    memory.via_swap_mib
                 );
             }
             for (index, step) in plan.steps.iter().enumerate() {

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::MemorySnapshot;
 use crate::gpu::{GpuState, GpuTenant, KernelOwner, TenantState};
-use crate::memory::{MemoryAdmission, MemoryDecision, MemoryRefusal, decide_memory};
+use crate::memory::{MemoryAdmission, MemoryDecision, MemoryRefusal, decide_memory_with_credit};
 use crate::policy::Policy;
 
 /// One step the runtime executes, in plan order.
@@ -149,10 +149,30 @@ fn guest_plan(
             },
         };
     }
+    // What the plan stops before the target starts: the guest that currently
+    // holds the card, and (for a Windows target) the office profile. Their
+    // resident memory is credited to the admission, because the plan frees it
+    // before the target needs it.
+    let current = gpu.owner.guest().filter(|current| *current != id);
+    let offices: Vec<&InstanceId> =
+        if observed.is_some_and(|instance| instance.guest_os == GuestOs::Windows) {
+            running_office_profiles(gpu)
+        } else {
+            Vec::new()
+        };
+    let credited_mib = current
+        .and_then(|current| gpu.instance(current))
+        .into_iter()
+        .chain(offices.iter().filter_map(|office| gpu.instance(office)))
+        .filter(|instance| instance.state.is_live())
+        .filter_map(|instance| instance.resident_mib)
+        .fold(0_u64, u64::saturating_add);
+
     let claim_mib = observed
         .and_then(|instance| instance.memory_mib)
         .unwrap_or(policy.memory.gpu_vm_claim_mib);
-    let admission = match decide_memory(memory, claim_mib, &policy.memory) {
+    let admission = match decide_memory_with_credit(memory, claim_mib, credited_mib, &policy.memory)
+    {
         MemoryDecision::Admit(admission) => admission,
         MemoryDecision::Wait(reason) => return SwitchOutcome::Wait { reason },
         MemoryDecision::Decline(reason) => {
@@ -162,9 +182,7 @@ fn guest_plan(
         }
     };
     let mut steps = Vec::new();
-    if let KernelOwner::Guest(current) = &gpu.owner
-        && current != id
-    {
+    if let Some(current) = current {
         steps.push(PlanStep::StopInstance {
             instance: current.clone(),
             mode: StopMode::Clean,
@@ -178,13 +196,11 @@ fn guest_plan(
             });
         }
     }
-    if observed.is_some_and(|instance| instance.guest_os == GuestOs::Windows) {
-        for office in running_office_profiles(gpu) {
-            steps.push(PlanStep::StopInstance {
-                instance: office.clone(),
-                mode: StopMode::Clean,
-            });
-        }
+    for office in &offices {
+        steps.push(PlanStep::StopInstance {
+            instance: (*office).clone(),
+            mode: StopMode::Clean,
+        });
     }
     steps.push(PlanStep::HandOverCard {
         from: gpu.owner.clone(),

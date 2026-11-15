@@ -110,6 +110,7 @@ fn observation(
         guest_os,
         state,
         memory_mib: None,
+        resident_mib: None,
     }
 }
 
@@ -262,6 +263,7 @@ fn a_claim_covered_by_headroom_is_admitted() {
         MemoryDecision::Admit(admission) => {
             assert_eq!(admission.required_mib, 24 * GIB_MIB);
             assert_eq!(admission.available_mib, 40 * GIB_MIB);
+            assert_eq!(admission.credited_mib, 0);
             assert_eq!(admission.via_swap_mib, 0);
         }
         other => panic!("expected an admission, got {other:?}"),
@@ -518,6 +520,69 @@ fn the_windows_desktop_requires_the_office_profile_stopped_cleanly_not_hibernate
         )),
         "a GPU handover never hibernates: {steps:?}"
     );
+}
+
+#[test]
+fn a_guest_switch_credits_the_memory_of_the_guest_it_stops() {
+    let mut gpu = host_gpu();
+    gpu.owner = guest("mac");
+    gpu.bound_to_vfio = true;
+    gpu.tenants.iter_mut().for_each(|tenant| {
+        tenant.state = TenantState::Stopped;
+    });
+    let mac = gpu
+        .instances
+        .iter_mut()
+        .find(|instance| instance.id == InstanceId::from("mac"))
+        .expect("the fixture has mac");
+    mac.state = InstanceState::Running;
+    mac.resident_mib = Some(24 * GIB_MIB);
+    gpu.instances
+        .iter_mut()
+        .find(|instance| instance.id == InstanceId::from("office"))
+        .expect("the fixture has office")
+        .state = InstanceState::Stopped;
+
+    // 10 GiB free plus the 24 GiB the plan frees by stopping the Mac desktop.
+    let outcome = conductor().switch(&guest("windows-desktop"), &gpu, &snapshot(10 * GIB_MIB));
+    let SwitchOutcome::Plan(plan) = outcome else {
+        panic!("expected a plan, got {outcome:?}");
+    };
+    let admission = plan.memory.expect("the guest target is admitted");
+    assert_eq!(admission.required_mib, 24 * GIB_MIB);
+    assert_eq!(admission.credited_mib, 24 * GIB_MIB);
+    assert_eq!(admission.available_mib, 34 * GIB_MIB);
+    assert_eq!(admission.via_swap_mib, 0);
+    assert_eq!(
+        plan.steps[0],
+        PlanStep::StopInstance {
+            instance: InstanceId::from("mac"),
+            mode: StopMode::Clean,
+        }
+    );
+}
+
+#[test]
+fn a_windows_switch_credits_the_office_profile_it_stops() {
+    let mut gpu = host_gpu();
+    let office = gpu
+        .instances
+        .iter_mut()
+        .find(|instance| instance.id == InstanceId::from("office"))
+        .expect("the fixture has office");
+    office.state = InstanceState::Running;
+    office.resident_mib = Some(4 * GIB_MIB);
+
+    // 22 GiB free plus the 4 GiB the office profile frees: admitted without
+    // touching swap.
+    let outcome = conductor().switch(&guest("windows-desktop"), &gpu, &snapshot(22 * GIB_MIB));
+    let SwitchOutcome::Plan(plan) = outcome else {
+        panic!("expected a plan, got {outcome:?}");
+    };
+    let admission = plan.memory.expect("the guest target is admitted");
+    assert_eq!(admission.credited_mib, 4 * GIB_MIB);
+    assert_eq!(admission.available_mib, 26 * GIB_MIB);
+    assert_eq!(admission.via_swap_mib, 0);
 }
 
 #[test]

@@ -47,8 +47,11 @@ impl MemoryHeadroom {
 pub struct MemoryAdmission {
     /// The claim that was granted, in MiB.
     pub required_mib: u64,
-    /// The headroom the decision saw, in MiB.
+    /// The headroom the decision saw, including memory the plan frees, in MiB.
     pub available_mib: u64,
+    /// The part of the headroom that comes from instances the plan stops
+    /// before the target starts, in MiB.
+    pub credited_mib: u64,
     /// The part of the claim that only swap can cover, in MiB (zero for a
     /// grant that fits in free memory).
     pub via_swap_mib: u64,
@@ -138,8 +141,27 @@ pub fn decide_memory(
     required_mib: u64,
     policy: &MemoryPolicy,
 ) -> MemoryDecision {
+    decide_memory_with_credit(snapshot, required_mib, 0, policy)
+}
+
+/// Decide RAM for a target, crediting memory the plan itself frees.
+///
+/// `credited_mib` is the resident memory of instances the switch plan stops
+/// before the target starts (the guest that currently holds the card, and the
+/// office profile paired with a Windows target). Those stops are already in the
+/// plan, so the target may rely on that memory; unlike a plain shortfall, it is
+/// not a reason to wait. The rules are otherwise those of [`decide_memory`], and
+/// the physical-RAM gate ignores the credit: freeing memory cannot make a
+/// pinned claim fit in RAM it does not have.
+#[must_use]
+pub fn decide_memory_with_credit(
+    snapshot: &MemorySnapshot,
+    required_mib: u64,
+    credited_mib: u64,
+    policy: &MemoryPolicy,
+) -> MemoryDecision {
     let headroom = MemoryHeadroom::from_snapshot(snapshot);
-    let available_mib = headroom.available_mib();
+    let available_mib = headroom.available_mib().saturating_add(credited_mib);
     let swap_free_mib = snapshot.meminfo.swap_free_mib();
     let ram_mib = snapshot.meminfo.total_mib();
     if required_mib > ram_mib {
@@ -152,6 +174,7 @@ pub fn decide_memory(
         return MemoryDecision::Admit(MemoryAdmission {
             required_mib,
             available_mib,
+            credited_mib,
             via_swap_mib: 0,
         });
     }
@@ -163,6 +186,7 @@ pub fn decide_memory(
             return MemoryDecision::Admit(MemoryAdmission {
                 required_mib,
                 available_mib,
+                credited_mib,
                 via_swap_mib: gap_mib,
             });
         }
