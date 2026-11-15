@@ -1,0 +1,26 @@
+[package]
+name = "cdct"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
+description = "The conductor: one decision engine for RAM, CPU quotas and the exclusive GPU"
+repository = "https://github.com/corbet-infra/cdct"
+
+[lib]
+name = "cdct"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cdct"
+path = "src/main.rs"
+
+[dependencies]
+cdrv = { path = "../cdrv" }
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
