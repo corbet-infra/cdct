@@ -67,6 +67,7 @@ dependencies = [
 [[package]]
 name = "cdrv"
 version = "0.1.0"
+source = "git+https://git.corbet.ch/corbet-infra/cdrv.git?branch=main#3478b8dda136cad8f3bee1d47b312d1bf4a8e796"
 dependencies = [
  "serde",
  "serde_json",

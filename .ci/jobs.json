@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generator": "ccid render v1",
+  "tool_revision": "",
+  "manifest_sha256": "847c11f7415616c6f7953937d0016e42cb237c2cb8e2ee2405d89351ee655395",
+  "jobs": {
+    "verify": {
+      "job": "verify",
+      "scheduler": "forgejo",
+      "checks": [
+        "rust"
+      ],
+      "workflow": "ci",
+      "command": [
+        "bash",
+        ".ci/run-cached.sh"
+      ],
+      "runs_on": "linux",
+      "archive_inputs": true
+    }
+  }
+}

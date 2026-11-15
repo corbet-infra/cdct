@@ -137,7 +137,7 @@ fn host_gpu() -> GpuState {
             total_bytes: 16 * GIB_BYTES,
         }),
         tenants: vec![
-            tenant("archlxc", GpuLadder::Desktop, TenantState::Running),
+            tenant("lxc-desktop", GpuLadder::Desktop, TenantState::Running),
             tenant("llm", GpuLadder::Interactive, TenantState::Running),
             tenant("comfyui", GpuLadder::BestEffort, TenantState::Running),
         ],
@@ -430,7 +430,7 @@ fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
                         ladder: GpuLadder::Interactive,
                     },
                     PlanStep::StopHostTenant {
-                        tenant: "archlxc".to_owned(),
+                        tenant: "lxc-desktop".to_owned(),
                         ladder: GpuLadder::Desktop,
                     },
                     PlanStep::HandOverCard {
@@ -721,7 +721,7 @@ fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order(
             ladder: GpuLadder::Interactive,
         },
         DisplacedTenant {
-            tenant: "archlxc".to_owned(),
+            tenant: "lxc-desktop".to_owned(),
             ladder: GpuLadder::Desktop,
         },
     ];
@@ -742,7 +742,7 @@ fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order(
                 to: KernelOwner::Host,
             },
             PlanStep::StartHostTenant {
-                tenant: "archlxc".to_owned(),
+                tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
             },
             PlanStep::StartHostTenant {
@@ -779,7 +779,7 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
                 ladder: GpuLadder::Interactive,
             },
             DisplacedTenant {
-                tenant: "archlxc".to_owned(),
+                tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
             },
         ],
@@ -797,7 +797,7 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
         starts,
         vec![
             &PlanStep::StartHostTenant {
-                tenant: "archlxc".to_owned(),
+                tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
             },
             &PlanStep::StartHostTenant {
@@ -838,7 +838,7 @@ fn ladder_input(signals: Vec<StarvationSignal>) -> LadderInput {
         now: Timestamp::from_secs(100),
         cooldown_until: Timestamp(0),
         tenants: vec![
-            tenant("archlxc", GpuLadder::Desktop, TenantState::Running),
+            tenant("lxc-desktop", GpuLadder::Desktop, TenantState::Running),
             tenant("llm", GpuLadder::Interactive, TenantState::Running),
             tenant("comfyui", GpuLadder::BestEffort, TenantState::Running),
         ],
@@ -982,7 +982,7 @@ fn the_ladder_never_evicts_a_tenant_at_or_above_the_starved_priority() {
         ladder: GpuLadder::Interactive,
         starved_ticks: 2,
     }]);
-    input.tenants = vec![tenant("archlxc", GpuLadder::Desktop, TenantState::Running)];
+    input.tenants = vec![tenant("lxc-desktop", GpuLadder::Desktop, TenantState::Running)];
     assert_eq!(
         conductor().ladder(&input),
         LadderDecision::None {
