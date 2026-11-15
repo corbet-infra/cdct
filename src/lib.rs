@@ -41,8 +41,8 @@ pub use facts::{
     parse_arcstats, parse_meminfo, parse_pressure,
 };
 pub use gpu::{
-    GpuLadder, GpuState, GpuTenant, InstanceObservation, KernelOwner, LadderDecision, LadderHold,
-    LadderInput, StarvationSignal, TenantState, VramFacts,
+    DisplacedTenant, GpuLadder, GpuState, GpuTenant, InstanceObservation, KernelOwner,
+    LadderDecision, LadderHold, LadderInput, StarvationSignal, TenantState, VramFacts,
 };
 pub use holders::{Holder, HolderState, HolderStore, HolderTable, StoreError};
 pub use memory::{

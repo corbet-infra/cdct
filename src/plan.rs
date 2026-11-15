@@ -1,14 +1,15 @@
 //! Switch planning: a typed, ordered list of steps for the runtime.
 //!
 //! A plan is data. `cdct` never stops a guest, binds a device or starts a
-//! session; it says what has to happen, in which order, and names the memory
-//! the switch was admitted with.
+//! session; it says what has to happen, in which order, names the memory the
+//! switch was admitted with, and records the host tenants it displaced so the
+//! switch back restores exactly that set.
 
 use cdrv::{GuestOs, InstanceClass, InstanceId, StopMode};
 use serde::{Deserialize, Serialize};
 
 use crate::facts::MemorySnapshot;
-use crate::gpu::{GpuState, GpuTenant, KernelOwner, TenantState};
+use crate::gpu::{DisplacedTenant, GpuState, GpuTenant, KernelOwner, TenantState};
 use crate::memory::{MemoryAdmission, MemoryDecision, MemoryRefusal, decide_memory_with_credit};
 use crate::policy::Policy;
 
@@ -74,7 +75,8 @@ pub enum SwitchRefusal {
     },
 }
 
-/// A switch plan, with the memory it was admitted against.
+/// A switch plan, with the memory it was admitted against and what it
+/// displaced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SwitchPlan {
     /// The kernel that will own the card.
@@ -82,6 +84,9 @@ pub struct SwitchPlan {
     /// The memory admission for a guest target; `None` for a host target,
     /// whose tenants take no new fixed claim.
     pub memory: Option<MemoryAdmission>,
+    /// The host tenants this plan stops. The runtime records them with the
+    /// holder so a later switch back to the host restores exactly this set.
+    pub displaced: Vec<DisplacedTenant>,
     /// The steps, in execution order.
     pub steps: Vec<PlanStep>,
 }
@@ -116,12 +121,14 @@ pub enum SwitchOutcome {
 /// stops the Windows office profile when the target is Windows (the two
 /// profiles never run together), hands the card over, starts the target and
 /// moves Sunshine. A host target is the reverse: stop the guest, hand the card
-/// back and restore the host tenants in ladder order.
+/// back and restore exactly the tenants the guest switch displaced, in ladder
+/// order (highest first).
 #[must_use]
 pub fn plan_switch(
     target: &KernelOwner,
     gpu: &GpuState,
     memory: &MemorySnapshot,
+    displaced: &[DisplacedTenant],
     policy: &Policy,
 ) -> SwitchOutcome {
     if &gpu.owner == target {
@@ -130,7 +137,7 @@ pub fn plan_switch(
         };
     }
     match target {
-        KernelOwner::Host => SwitchOutcome::Plan(host_plan(gpu)),
+        KernelOwner::Host => SwitchOutcome::Plan(host_plan(gpu, displaced)),
         KernelOwner::Guest(id) => guest_plan(id, gpu, memory, policy),
     }
 }
@@ -188,8 +195,13 @@ fn guest_plan(
             mode: StopMode::Clean,
         });
     }
+    let mut displaced = Vec::new();
     if gpu.owner.is_host() {
         for tenant in host_tenants_lowest_first(gpu) {
+            displaced.push(DisplacedTenant {
+                tenant: tenant.id.clone(),
+                ladder: tenant.ladder,
+            });
             steps.push(PlanStep::StopHostTenant {
                 tenant: tenant.id.clone(),
                 ladder: tenant.ladder,
@@ -215,11 +227,12 @@ fn guest_plan(
     SwitchOutcome::Plan(SwitchPlan {
         target: KernelOwner::Guest(id.clone()),
         memory: Some(admission),
+        displaced,
         steps,
     })
 }
 
-fn host_plan(gpu: &GpuState) -> SwitchPlan {
+fn host_plan(gpu: &GpuState, displaced: &[DisplacedTenant]) -> SwitchPlan {
     let mut steps = Vec::new();
     if let KernelOwner::Guest(current) = &gpu.owner {
         steps.push(PlanStep::StopInstance {
@@ -231,21 +244,17 @@ fn host_plan(gpu: &GpuState) -> SwitchPlan {
         from: gpu.owner.clone(),
         to: KernelOwner::Host,
     });
-    let mut returning: Vec<&GpuTenant> = gpu
-        .tenants
-        .iter()
-        .filter(|tenant| tenant.state != TenantState::Running)
-        .collect();
+    let mut returning: Vec<&DisplacedTenant> = displaced.iter().collect();
     returning.sort_by(|left, right| {
         right
             .ladder
             .priority()
             .cmp(&left.ladder.priority())
-            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.tenant.cmp(&right.tenant))
     });
     for tenant in returning {
         steps.push(PlanStep::StartHostTenant {
-            tenant: tenant.id.clone(),
+            tenant: tenant.tenant.clone(),
             ladder: tenant.ladder,
         });
     }
@@ -255,6 +264,7 @@ fn host_plan(gpu: &GpuState) -> SwitchPlan {
     SwitchPlan {
         target: KernelOwner::Host,
         memory: None,
+        displaced: Vec::new(),
         steps,
     }
 }

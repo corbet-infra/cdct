@@ -7,12 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cdct::{
-    Conductor, FactsFile, GpuLadder, GpuState, GpuTenant, Holder, HolderState, HolderStore,
-    HolderTable, InstanceObservation, KernelOwner, LadderDecision, LadderHold, LadderInput,
-    MemoryDecision, MemoryHeadroom, MemoryRefusal, MemorySnapshot, ObservedDeviceDriver,
-    ObservedHost, ObservedInstance, PlanStep, Policy, ProcReader, RawFacts, ReconcileReason,
-    ReconcileReport, Repair, StarvationSignal, SwitchOutcome, SwitchRefusal, TenantState,
-    VramFacts, holders::read_table, parse_arcstats, parse_meminfo, parse_pressure,
+    Conductor, DisplacedTenant, FactsFile, GpuLadder, GpuState, GpuTenant, Holder, HolderState,
+    HolderStore, HolderTable, InstanceObservation, KernelOwner, LadderDecision, LadderHold,
+    LadderInput, MemoryDecision, MemoryHeadroom, MemoryRefusal, MemorySnapshot,
+    ObservedDeviceDriver, ObservedHost, ObservedInstance, PlanStep, Policy, ProcReader, RawFacts,
+    ReconcileReason, ReconcileReport, Repair, StarvationSignal, SwitchOutcome, SwitchPlan,
+    SwitchRefusal, TenantState, VramFacts, holders::read_table, parse_arcstats, parse_meminfo,
+    parse_pressure,
 };
 use cdrv::{
     EventLog, GuestOs, HolderId, InstanceClass, InstanceId, InstanceState, LeaseId, Source,
@@ -157,6 +158,11 @@ fn guest(id: &str) -> KernelOwner {
 
 fn conductor() -> Conductor {
     Conductor::with_defaults()
+}
+
+/// Plan a switch with no recorded displacement (the host holds the card).
+fn switch(target: &KernelOwner, gpu: &GpuState, memory: &MemorySnapshot) -> SwitchOutcome {
+    conductor().switch(target, gpu, memory, &HolderTable::new())
 }
 
 fn steps(outcome: &SwitchOutcome) -> &[PlanStep] {
@@ -393,7 +399,7 @@ fn assert_one_kernel_plan(outcome: &SwitchOutcome, from: &KernelOwner, to: &Kern
 
 #[test]
 fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
-    let outcome = conductor().switch(&guest("mac"), &host_gpu(), &snapshot(40 * GIB_MIB));
+    let outcome = switch(&guest("mac"), &host_gpu(), &snapshot(40 * GIB_MIB));
     assert_one_kernel_plan(&outcome, &KernelOwner::Host, &guest("mac"));
     match &outcome {
         SwitchOutcome::Plan(plan) => {
@@ -436,7 +442,7 @@ fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
 
 #[test]
 fn a_switch_to_a_gpu_vm_without_enough_ram_waits_with_its_reason() {
-    let outcome = conductor().switch(&guest("mac"), &host_gpu(), &snapshot(10 * GIB_MIB));
+    let outcome = switch(&guest("mac"), &host_gpu(), &snapshot(10 * GIB_MIB));
     assert_eq!(
         outcome,
         SwitchOutcome::Wait {
@@ -454,7 +460,7 @@ fn a_switch_to_a_gpu_vm_without_enough_ram_waits_with_its_reason() {
 #[test]
 fn a_switch_to_a_gpu_vm_larger_than_the_host_is_declined() {
     let memory = small_host_snapshot(4 * GIB_MIB, 2 * GIB_MIB, 2 * GIB_MIB);
-    let outcome = conductor().switch(&guest("mac"), &host_gpu(), &memory);
+    let outcome = switch(&guest("mac"), &host_gpu(), &memory);
     assert_eq!(
         outcome,
         SwitchOutcome::Decline {
@@ -474,7 +480,7 @@ fn a_switch_between_guests_stops_the_current_guest_cleanly_before_the_handover()
     gpu.tenants.iter_mut().for_each(|tenant| {
         tenant.state = TenantState::Stopped;
     });
-    let outcome = conductor().switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB));
+    let outcome = switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB));
     let steps = steps(&outcome);
     assert_eq!(
         steps[0],
@@ -488,7 +494,7 @@ fn a_switch_between_guests_stops_the_current_guest_cleanly_before_the_handover()
 
 #[test]
 fn the_windows_desktop_requires_the_office_profile_stopped_cleanly_not_hibernated() {
-    let outcome = conductor().switch(
+    let outcome = switch(
         &guest("windows-desktop"),
         &host_gpu(),
         &snapshot(40 * GIB_MIB),
@@ -544,7 +550,7 @@ fn a_guest_switch_credits_the_memory_of_the_guest_it_stops() {
         .state = InstanceState::Stopped;
 
     // 10 GiB free plus the 24 GiB the plan frees by stopping the Mac desktop.
-    let outcome = conductor().switch(&guest("windows-desktop"), &gpu, &snapshot(10 * GIB_MIB));
+    let outcome = switch(&guest("windows-desktop"), &gpu, &snapshot(10 * GIB_MIB));
     let SwitchOutcome::Plan(plan) = outcome else {
         panic!("expected a plan, got {outcome:?}");
     };
@@ -575,7 +581,7 @@ fn a_windows_switch_credits_the_office_profile_it_stops() {
 
     // 22 GiB free plus the 4 GiB the office profile frees: admitted without
     // touching swap.
-    let outcome = conductor().switch(&guest("windows-desktop"), &gpu, &snapshot(22 * GIB_MIB));
+    let outcome = switch(&guest("windows-desktop"), &gpu, &snapshot(22 * GIB_MIB));
     let SwitchOutcome::Plan(plan) = outcome else {
         panic!("expected a plan, got {outcome:?}");
     };
@@ -587,7 +593,7 @@ fn a_windows_switch_credits_the_office_profile_it_stops() {
 
 #[test]
 fn a_switch_to_the_office_profile_is_declined() {
-    let outcome = conductor().switch(&guest("office"), &host_gpu(), &snapshot(40 * GIB_MIB));
+    let outcome = switch(&guest("office"), &host_gpu(), &snapshot(40 * GIB_MIB));
     assert_eq!(
         outcome,
         SwitchOutcome::Decline {
@@ -598,16 +604,58 @@ fn a_switch_to_the_office_profile_is_declined() {
     );
 }
 
-#[test]
-fn a_switch_back_to_host_restores_the_tenants_in_ladder_order() {
-    let mut gpu = host_gpu();
-    gpu.owner = guest("mac");
+fn plan_of(outcome: SwitchOutcome) -> SwitchPlan {
+    match outcome {
+        SwitchOutcome::Plan(plan) => plan,
+        other => panic!("expected a plan, got {other:?}"),
+    }
+}
+
+fn table_holding(instance: &str, displaced: Vec<DisplacedTenant>) -> HolderTable {
+    let mut table = HolderTable::new();
+    let mut log = EventLog::new("synthetic-host", Source::Cdct, 1);
+    let mut holder = card_holder(&format!("gpu-{instance}"), instance);
+    holder.displaced = displaced;
+    table.admit(holder, &mut log, Timestamp::from_secs(1));
+    table
+}
+
+/// The host-side tenants all stopped, with `instance` holding the card.
+fn guest_holds_card(gpu: &mut GpuState, instance: &str) {
+    gpu.owner = guest(instance);
     gpu.bound_to_vfio = true;
     gpu.tenants.iter_mut().for_each(|tenant| {
         tenant.state = TenantState::Stopped;
     });
-    gpu.instances[0].state = InstanceState::Running;
-    let outcome = conductor().switch(&KernelOwner::Host, &gpu, &snapshot(40 * GIB_MIB));
+    if let Some(observed) = gpu
+        .instances
+        .iter_mut()
+        .find(|observed| observed.id == InstanceId::from(instance))
+    {
+        observed.state = InstanceState::Running;
+    }
+}
+
+#[test]
+fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order() {
+    let displaced = vec![
+        DisplacedTenant {
+            tenant: "comfyui".to_owned(),
+            ladder: GpuLadder::BestEffort,
+        },
+        DisplacedTenant {
+            tenant: "llm".to_owned(),
+            ladder: GpuLadder::Interactive,
+        },
+        DisplacedTenant {
+            tenant: "archlxc".to_owned(),
+            ladder: GpuLadder::Desktop,
+        },
+    ];
+    let mut gpu = host_gpu();
+    guest_holds_card(&mut gpu, "mac");
+    let table = table_holding("mac", displaced);
+    let outcome = conductor().switch(&KernelOwner::Host, &gpu, &snapshot(40 * GIB_MIB), &table);
     assert_one_kernel_plan(&outcome, &guest("mac"), &KernelOwner::Host);
     assert_eq!(
         steps(&outcome),
@@ -640,9 +688,58 @@ fn a_switch_back_to_host_restores_the_tenants_in_ladder_order() {
 }
 
 #[test]
+fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
+    let mut gpu = host_gpu();
+    // `comfyui` was already scaled to zero (an idle tenant behind the front):
+    // the switch must neither stop nor later restart it.
+    gpu.tenants
+        .iter_mut()
+        .find(|tenant| tenant.id == "comfyui")
+        .expect("the fixture has comfyui")
+        .state = TenantState::Stopped;
+    let plan = plan_of(switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB)));
+    assert_eq!(
+        plan.displaced,
+        vec![
+            DisplacedTenant {
+                tenant: "llm".to_owned(),
+                ladder: GpuLadder::Interactive,
+            },
+            DisplacedTenant {
+                tenant: "archlxc".to_owned(),
+                ladder: GpuLadder::Desktop,
+            },
+        ],
+        "only the tenants the switch actually stopped are recorded"
+    );
+
+    let table = table_holding("mac", plan.displaced.clone());
+    guest_holds_card(&mut gpu, "mac");
+    let outcome = conductor().switch(&KernelOwner::Host, &gpu, &snapshot(40 * GIB_MIB), &table);
+    let starts: Vec<&PlanStep> = steps(&outcome)
+        .iter()
+        .filter(|step| matches!(step, PlanStep::StartHostTenant { .. }))
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            &PlanStep::StartHostTenant {
+                tenant: "archlxc".to_owned(),
+                ladder: GpuLadder::Desktop,
+            },
+            &PlanStep::StartHostTenant {
+                tenant: "llm".to_owned(),
+                ladder: GpuLadder::Interactive,
+            },
+        ],
+        "the idle tenant stays as it was: {outcome:?}"
+    );
+}
+
+#[test]
 fn switching_to_the_current_owner_is_already_held() {
     assert_eq!(
-        conductor().switch(&KernelOwner::Host, &host_gpu(), &snapshot(40 * GIB_MIB)),
+        switch(&KernelOwner::Host, &host_gpu(), &snapshot(40 * GIB_MIB)),
         SwitchOutcome::AlreadyHeld {
             kernel: KernelOwner::Host
         }
@@ -650,7 +747,7 @@ fn switching_to_the_current_owner_is_already_held() {
     let mut gpu = host_gpu();
     gpu.owner = guest("mac");
     assert_eq!(
-        conductor().switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB)),
+        switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB)),
         SwitchOutcome::AlreadyHeld {
             kernel: guest("mac")
         }
@@ -811,6 +908,7 @@ fn card_holder(id: &str, instance: &str) -> Holder {
         memory_mib: 24 * GIB_MIB,
         cpu_cores: 6.0,
         devices: vec!["example-gpu".to_owned()],
+        displaced: Vec::new(),
         state: HolderState::Running,
         since: Timestamp(0),
         last_event_seq: 0,

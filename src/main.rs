@@ -168,6 +168,13 @@ fn plan_switch(
         }
     };
     let conductor = Conductor::new(policy);
+    let table = match read_table(state) {
+        Ok(table) => table.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("cdct: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let (memory, gpu) = match facts_path {
         Some(path) => match FactsFile::read(path) {
             Ok(facts) => match facts.memory_snapshot(path) {
@@ -182,7 +189,7 @@ fn plan_switch(
                 return ExitCode::FAILURE;
             }
         },
-        None => match live_facts(state) {
+        None => match live_facts(&table) {
             Ok(facts) => facts,
             Err(error) => {
                 eprintln!("cdct: {error}");
@@ -190,7 +197,7 @@ fn plan_switch(
             }
         },
     };
-    let outcome = conductor.switch(kernel, &gpu, &memory);
+    let outcome = conductor.switch(kernel, &gpu, &memory, &table);
     if json {
         println!(
             "{}",
@@ -206,16 +213,13 @@ fn plan_switch(
     }
 }
 
-fn live_facts(state: &Path) -> Result<(MemorySnapshot, GpuState), String> {
+fn live_facts(table: &cdct::HolderTable) -> Result<(MemorySnapshot, GpuState), String> {
     let raw = ProcReader::system()
         .raw_facts()
         .map_err(|error| format!("cannot read /proc: {error}"))?;
     let memory = MemorySnapshot::parse(&raw).map_err(|error| error.to_string())?;
-    let table = read_table(state)
-        .map_err(|error| error.to_string())?
-        .unwrap_or_default();
     let gpu = GpuState {
-        owner: table.gpu_owner,
+        owner: table.gpu_owner.clone(),
         ..GpuState::default()
     };
     Ok((memory, gpu))
@@ -237,6 +241,14 @@ fn print_outcome(outcome: &SwitchOutcome) {
                     memory.credited_mib,
                     memory.via_swap_mib
                 );
+            }
+            if !plan.displaced.is_empty() {
+                let names: Vec<&str> = plan
+                    .displaced
+                    .iter()
+                    .map(|displaced| displaced.tenant.as_str())
+                    .collect();
+                println!("  displaced: {}", names.join(", "));
             }
             for (index, step) in plan.steps.iter().enumerate() {
                 println!("  {}. {}", index + 1, step_line(step));

@@ -56,14 +56,24 @@ impl Conductor {
     }
 
     /// Decide and plan a switch of the card to `target`.
+    ///
+    /// The table supplies what an earlier switch displaced, so a switch back to
+    /// the host restores exactly that set.
     #[must_use]
     pub fn switch(
         &self,
         target: &crate::gpu::KernelOwner,
         gpu: &GpuState,
         memory: &MemorySnapshot,
+        table: &HolderTable,
     ) -> SwitchOutcome {
-        plan_switch(target, gpu, memory, &self.policy)
+        plan_switch(
+            target,
+            gpu,
+            memory,
+            table.displaced_by_card_custodian(),
+            &self.policy,
+        )
     }
 
     /// Rebuild the holder table from observed facts after a crash.

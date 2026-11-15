@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::gpu::KernelOwner;
+use crate::gpu::{DisplacedTenant, KernelOwner};
 
 /// What a holder is allowed to do with what it was granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,6 +53,10 @@ pub struct Holder {
     pub cpu_cores: f32,
     /// The exclusive devices granted, by hardware-layer name.
     pub devices: Vec<String>,
+    /// The host tenants the switch that granted this holder displaced. A later
+    /// switch back to the host restores exactly this set.
+    #[serde(default)]
+    pub displaced: Vec<DisplacedTenant>,
     /// Its observed state.
     pub state: HolderState,
     /// When it was admitted.
@@ -106,6 +110,14 @@ impl HolderTable {
             .find(|holder| holder.is_card_custodian())
     }
 
+    /// The host tenants the card's holder displaced, empty when the host holds
+    /// the card or no switch recorded any.
+    #[must_use]
+    pub fn displaced_by_card_custodian(&self) -> &[DisplacedTenant] {
+        self.card_custodian()
+            .map_or(&[], |holder| holder.displaced.as_slice())
+    }
+
     /// Admit one holder. A holder that takes an exclusive device and has an
     /// instance becomes the card's custodian and moves ownership to that guest.
     ///
@@ -124,6 +136,7 @@ impl HolderTable {
                 "priority": holder.priority,
                 "memory_mib": holder.memory_mib,
                 "devices": holder.devices,
+                "displaced": holder.displaced,
             }),
         );
         holder.last_event_seq = event.seq;

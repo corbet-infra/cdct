@@ -130,6 +130,16 @@ pub struct InstanceObservation {
     pub resident_mib: Option<u64>,
 }
 
+/// A host tenant a guest switch stopped, kept so the switch back restores
+/// exactly that set and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplacedTenant {
+    /// The tenant's name in the platform.
+    pub tenant: String,
+    /// The ladder rung it held.
+    pub ladder: GpuLadder,
+}
+
 /// VRAM counters as the driver reads them from sysfs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VramFacts {
