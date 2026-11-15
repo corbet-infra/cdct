@@ -69,6 +69,19 @@ pub struct DisplacedTenant {
     pub tenant: String,
     /// The ladder rung it held.
     pub ladder: GpuLadder,
+    /// How many replicas it ran when it was stopped; the switch back starts
+    /// exactly that many. The planner cannot know the count before the stop,
+    /// so it records the placeholder 1 and `cwld` overwrites it from
+    /// `HostGpu::tenant_replicas` before the stop. Old tables without the
+    /// field read as 1.
+    #[serde(default = "one_replica")]
+    pub replicas: u32,
+}
+
+/// The default replica count.
+#[must_use]
+pub const fn one_replica() -> u32 {
+    1
 }
 
 /// VRAM counters as the driver reads them from sysfs.

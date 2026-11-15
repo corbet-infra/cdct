@@ -742,19 +742,23 @@ fn guest_holds_card(gpu: &mut GpuState, instance: &str) {
 }
 
 #[test]
-fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order() {
+fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order_with_their_stored_replicas()
+ {
     let displaced = vec![
         DisplacedTenant {
             tenant: "comfyui".to_owned(),
             ladder: GpuLadder::BestEffort,
+            replicas: 1,
         },
         DisplacedTenant {
             tenant: "llm".to_owned(),
             ladder: GpuLadder::Interactive,
+            replicas: 3,
         },
         DisplacedTenant {
             tenant: "lxc-desktop".to_owned(),
             ladder: GpuLadder::Desktop,
+            replicas: 1,
         },
     ];
     let mut gpu = host_gpu();
@@ -777,14 +781,17 @@ fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order(
             PlanStep::StartHostTenant {
                 tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
+                replicas: 1,
             },
             PlanStep::StartHostTenant {
                 tenant: "llm".to_owned(),
                 ladder: GpuLadder::Interactive,
+                replicas: 3,
             },
             PlanStep::StartHostTenant {
                 tenant: "comfyui".to_owned(),
                 ladder: GpuLadder::BestEffort,
+                replicas: 1,
             },
             PlanStep::SunshineFollows {
                 kernel: KernelOwner::Host,
@@ -810,10 +817,12 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
             DisplacedTenant {
                 tenant: "llm".to_owned(),
                 ladder: GpuLadder::Interactive,
+                replicas: 1,
             },
             DisplacedTenant {
                 tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
+                replicas: 1,
             },
         ],
         "only the tenants the switch actually stopped are recorded"
@@ -832,10 +841,12 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
             &PlanStep::StartHostTenant {
                 tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
+                replicas: 1,
             },
             &PlanStep::StartHostTenant {
                 tenant: "llm".to_owned(),
                 ladder: GpuLadder::Interactive,
+                replicas: 3,
             },
         ],
         "the idle tenant stays as it was: {outcome:?}"
@@ -1303,4 +1314,27 @@ impl Drop for TempTree {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn a_holder_table_round_trip_keeps_the_replica_count() {
+    let table = table_holding(
+        "mac",
+        vec![DisplacedTenant {
+            tenant: "llm".to_owned(),
+            ladder: GpuLadder::Interactive,
+            replicas: 3,
+        }],
+    );
+    let text = serde_json::to_string(&table).expect("the table serializes");
+    let back: HolderTable = serde_json::from_str(&text).expect("the table reads back");
+    assert_eq!(back.holders[0].displaced[0].replicas, 3);
+}
+
+#[test]
+fn an_old_table_without_replicas_reads_as_one() {
+    let tenant: DisplacedTenant =
+        serde_json::from_str(r#"{"tenant":"llm","ladder":"gpu-interactive"}"#)
+            .expect("an old entry");
+    assert_eq!(tenant.replicas, 1);
 }

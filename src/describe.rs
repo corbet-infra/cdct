@@ -31,10 +31,10 @@ pub fn outcome(outcome: &SwitchOutcome) -> Vec<String> {
                 ));
             }
             if !plan.displaced.is_empty() {
-                let names: Vec<&str> = plan
+                let names: Vec<String> = plan
                     .displaced
                     .iter()
-                    .map(|displaced| displaced.tenant.as_str())
+                    .map(|displaced| format!("{} x{}", displaced.tenant, displaced.replicas))
                     .collect();
                 lines.push(format!("  displaced: {}", names.join(", ")));
             }
@@ -197,9 +197,11 @@ fn step_line(step: &PlanStep) -> String {
             format!("hand the card {device} over: {from} -> {to}")
         }
         PlanStep::StartInstance { instance } => format!("start instance {instance}"),
-        PlanStep::StartHostTenant { tenant, ladder } => {
-            format!("start host tenant {tenant} ({ladder})")
-        }
+        PlanStep::StartHostTenant {
+            tenant,
+            ladder,
+            replicas,
+        } => format!("start host tenant {tenant} ({ladder}), {replicas} replica(s)"),
         PlanStep::SunshineFollows { kernel } => format!("Sunshine follows {kernel}"),
     }
 }

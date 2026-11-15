@@ -58,6 +58,9 @@ pub enum PlanStep {
         tenant: String,
         /// Its ladder rung.
         ladder: crate::gpu::GpuLadder,
+        /// How many replicas to start: the count stored when it was stopped.
+        #[serde(default = "crate::gpu::one_replica")]
+        replicas: u32,
     },
     /// Sunshine moves with the card: the kernel that holds the card runs the
     /// Sunshine the owner connects to.
@@ -231,6 +234,9 @@ fn guest_plan(
             displaced.push(DisplacedTenant {
                 tenant: tenant.id.clone(),
                 ladder: tenant.ladder,
+                // Placeholder: cwld overwrites it from the driver's count
+                // before the stop.
+                replicas: 1,
             });
             steps.push(PlanStep::StopHostTenant {
                 tenant: tenant.id.clone(),
@@ -288,6 +294,7 @@ fn host_plan(gpu: &GpuState, displaced: &[DisplacedTenant]) -> SwitchPlan {
         steps.push(PlanStep::StartHostTenant {
             tenant: tenant.tenant.clone(),
             ladder: tenant.ladder,
+            replicas: tenant.replicas,
         });
     }
     steps.push(PlanStep::SunshineFollows {
