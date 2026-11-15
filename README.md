@@ -181,6 +181,10 @@ the plans it receives this way; the tray ignores `granted`, and `cdct watch`
 prints it like any other reply. The channel a request arrives on is the
 identity: `unix:`/`device:` carries no credential.
 
+A guest plan moves Sunshine right before `hand_over_card` (the host's Sunshine
+holds the video encoder and must leave the card first); a host plan ends with
+`sunshine_follows` for the host.
+
 ## How to run the tests
 
 ```sh

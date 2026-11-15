@@ -410,7 +410,16 @@ fn assert_one_kernel_plan(outcome: &SwitchOutcome, from: &KernelOwner, to: &Kern
                     "a start only happens after the handover: {steps:?}"
                 );
             }
-            PlanStep::HandOverCard { .. } | PlanStep::SunshineFollows { .. } => {}
+            PlanStep::HandOverCard { .. } => {}
+            PlanStep::SunshineFollows { kernel } => {
+                // A guest plan moves Sunshine right before the hand-over; a
+                // host plan ends with it.
+                if kernel.is_host() {
+                    assert_eq!(index, steps.len() - 1, "host Sunshine is last: {steps:?}");
+                } else {
+                    assert_eq!(index + 1, handover, "Sunshine leaves first: {steps:?}");
+                }
+            }
         }
     }
 }
@@ -441,6 +450,9 @@ fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
                         tenant: "lxc-desktop".to_owned(),
                         ladder: GpuLadder::Desktop,
                     },
+                    PlanStep::SunshineFollows {
+                        kernel: guest("mac")
+                    },
                     PlanStep::HandOverCard {
                         device: "example-gpu".to_owned(),
                         from: KernelOwner::Host,
@@ -448,9 +460,6 @@ fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
                     },
                     PlanStep::StartInstance {
                         instance: InstanceId::from("mac"),
-                    },
-                    PlanStep::SunshineFollows {
-                        kernel: guest("mac")
                     },
                 ]
             );

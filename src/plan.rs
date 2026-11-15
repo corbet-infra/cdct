@@ -63,7 +63,9 @@ pub enum PlanStep {
         replicas: u32,
     },
     /// Sunshine moves with the card: the kernel that holds the card runs the
-    /// Sunshine the owner connects to.
+    /// Sunshine the owner connects to. In a guest plan it comes right before
+    /// the hand-over (the host's Sunshine holds the video encoder and must
+    /// leave the card first); in a host plan it is the last step.
     SunshineFollows {
         /// The kernel that now holds the card.
         kernel: KernelOwner,
@@ -139,8 +141,8 @@ pub enum SwitchOutcome {
 /// A guest target is a GPU VM with a fixed claim (24 GiB by default): it is
 /// admitted by the memory guard first, then the plan stops what is on the card,
 /// stops the Windows office profile when the target is Windows (the two
-/// profiles never run together), hands the card over, starts the target and
-/// moves Sunshine. A host target is the reverse: stop the guest, hand the card
+/// profiles never run together), moves Sunshine off the card, hands the card over
+/// and starts the target. A host target is the reverse: stop the guest, hand the card
 /// back and restore exactly the tenants the guest switch displaced, in ladder
 /// order (highest first).
 #[must_use]
@@ -250,6 +252,11 @@ fn guest_plan(
             mode: StopMode::Clean,
         });
     }
+    // The host's Sunshine holds the card's video encoder, so it leaves the
+    // card before the hand-over.
+    steps.push(PlanStep::SunshineFollows {
+        kernel: KernelOwner::Guest(id.clone()),
+    });
     steps.push(PlanStep::HandOverCard {
         device: gpu.device.clone(),
         from: gpu.owner.clone(),
@@ -257,9 +264,6 @@ fn guest_plan(
     });
     steps.push(PlanStep::StartInstance {
         instance: id.clone(),
-    });
-    steps.push(PlanStep::SunshineFollows {
-        kernel: KernelOwner::Guest(id.clone()),
     });
     SwitchOutcome::Plan(SwitchPlan {
         target: KernelOwner::Guest(id.clone()),
