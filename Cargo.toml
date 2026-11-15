@@ -14,13 +14,28 @@ path = "src/lib.rs"
 name = "cdct"
 path = "src/main.rs"
 
+[[bin]]
+name = "cdct-tray"
+path = "src/bin/cdct-tray.rs"
+required-features = ["tray"]
+
+[features]
+default = []
+# The tray is a separate binary; the daemon and CLI build without any GUI
+# dependency. On Linux `ksni` is the pure-Rust StatusNotifierItem backend, so
+# the GUI libraries (GTK, libappindicator) are not needed even with the tray.
+tray = ["dep:tray-icon", "dep:winit"]
+
 [dependencies]
 cdrv = { git = "https://git.corbet.ch/corbet-infra/cdrv.git", branch = "main" }
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
+listenfd = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tray-icon = { version = "0.26", optional = true, default-features = false, features = ["ksni"] }
+winit = { version = "0.30", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -230,6 +230,12 @@ pub enum StoreError {
         #[source]
         source: serde_json::Error,
     },
+    /// Another conductor already holds the writer lock.
+    #[error("holder store {path} is already held by another writer")]
+    Locked {
+        /// The file that is locked.
+        path: String,
+    },
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> StoreError {
@@ -253,7 +259,32 @@ pub struct HolderStore {
 impl HolderStore {
     /// Open (creating if needed) and exclusively lock the state file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
+        let (file, path) = Self::prepare(path.as_ref())?;
+        file.lock_exclusive()
+            .map_err(|error| io_error(&path, error))?;
+        Ok(Self { file, path })
+    }
+
+    /// Open and exclusively lock the state file, failing at once when another
+    /// writer holds it.
+    ///
+    /// This is what the daemon uses: a second `cdct serve` on one host must
+    /// report the conflict, never wait behind the first.
+    pub fn try_open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let (file, path) = Self::prepare(path.as_ref())?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Self { file, path }),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(StoreError::Locked {
+                    path: path.display().to_string(),
+                })
+            }
+            Err(error) => Err(io_error(&path, error)),
+        }
+    }
+
+    fn prepare(path: &Path) -> Result<(File, PathBuf), StoreError> {
+        let path = path.to_path_buf();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -266,9 +297,7 @@ impl HolderStore {
             .truncate(false)
             .open(&path)
             .map_err(|error| io_error(&path, error))?;
-        file.lock_exclusive()
-            .map_err(|error| io_error(&path, error))?;
-        Ok(Self { file, path })
+        Ok((file, path))
     }
 
     /// The state file this store owns.

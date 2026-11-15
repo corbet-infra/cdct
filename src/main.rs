@@ -1,25 +1,37 @@
 //! `cdct` — the conductor's command line.
 //!
-//! Two commands, no daemon: `status` shows the persisted holder table, and
-//! `plan switch` prints the plan for a kernel change, or the reason it waits or
-//! is declined. Exit status: 0 plan or already held, 2 wait, 3 decline, 1 error.
+//! `serve` runs the daemon; `status`, `switch` and `watch` are its clients
+//! (over the local socket, or a device path when run inside a guest); `plan
+//! switch` is the offline planner that changes nothing. Exit status: 0 plan or
+//! already held, 2 wait, 3 decline, 1 error.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cdct::client::{Client, Endpoint};
+use cdct::config::Config;
+use cdct::protocol::{Reply, Request};
 use cdct::{
-    Conductor, FactsFile, GpuState, KernelOwner, MemoryRefusal, MemorySnapshot, PlanStep, Policy,
-    ProcReader, SwitchOutcome, holders::read_table,
+    Conductor, FactsFile, GpuState, KernelOwner, MemorySnapshot, Policy, ProcReader, SwitchOutcome,
+    describe, holders::read_table,
 };
-use cdrv::InstanceId;
 use clap::{Parser, Subcommand};
-use serde_json::json;
+use serde::Serialize;
 
 /// The conductor: decides who gets RAM and the GPU, and never executes.
 #[derive(Debug, Parser)]
 #[command(name = "cdct", version, about)]
 struct Cli {
-    /// The persisted holder table; defaults to $CDCT_STATE or /var/lib/cdct/holders.json.
+    /// The daemon endpoint: a Unix socket path, or `device:<path>`.
+    #[arg(long, global = true)]
+    endpoint: Option<String>,
+    /// The configuration file; defaults to $CDCT_CONFIG, then the built-in
+    /// defaults.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// The holder table for `serve`; defaults to $CDCT_STATE or
+    /// /var/lib/cdct/holders.json.
     #[arg(long, global = true)]
     state: Option<PathBuf>,
     /// A policy JSON file; missing fields keep their defaults.
@@ -31,9 +43,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Show the persisted holder table.
+    /// Run the daemon: the one writer, its listeners and its pushed events.
+    Serve {
+        /// The local control socket; overrides the configuration.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+    /// Ask the daemon who holds the card and what each target would do.
     Status {
-        /// Print the table as JSON.
+        /// Print the status as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Switch the card to a configured kernel (`macos`, `windows`, `linux`).
+    Switch {
+        /// A configured target name, or `host` / `guest:<instance>`.
+        name: String,
+        /// Print the outcome as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the daemon's event stream until interrupted.
+    Watch {
+        /// Print every message as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -46,7 +78,7 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum PlanCommand {
-    /// Plan a switch of the card to a kernel.
+    /// Plan a switch of the card to a kernel, offline.
     Switch {
         /// `host` or `guest:<instance>`.
         #[arg(value_parser = parse_kernel)]
@@ -66,25 +98,23 @@ fn parse_kernel(value: &str) -> Result<KernelOwner, String> {
         return Ok(KernelOwner::Host);
     }
     match value.strip_prefix("guest:") {
-        Some(id) if !id.is_empty() => Ok(KernelOwner::Guest(InstanceId::from(id))),
+        Some(id) if !id.is_empty() => Ok(KernelOwner::Guest(cdrv::InstanceId::from(id))),
         _ => Err(format!(
             "kernel must be `host` or `guest:<instance>`, got {value:?}"
         )),
     }
 }
 
-fn state_path(cli: &Cli) -> PathBuf {
-    cli.state
-        .clone()
-        .or_else(|| std::env::var_os("CDCT_STATE").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/var/lib/cdct/holders.json"))
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let state = state_path(&cli);
     match &cli.command {
-        Command::Status { json } => status(&state, *json),
+        #[cfg(unix)]
+        Command::Serve { socket } => serve(&cli, socket.as_deref()),
+        #[cfg(not(unix))]
+        Command::Serve { .. } => fail("cdct serve needs a Unix host"),
+        Command::Status { json } => status(&cli, *json),
+        Command::Switch { name, json } => switch(&cli, name, *json),
+        Command::Watch { json } => watch(&cli, *json),
         Command::Plan {
             command:
                 PlanCommand::Switch {
@@ -92,125 +122,226 @@ fn main() -> ExitCode {
                     facts,
                     json,
                 },
-        } => plan_switch(
-            cli.policy.as_deref(),
-            &state,
-            kernel,
-            facts.as_deref(),
-            *json,
-        ),
+        } => plan_switch(&cli, kernel, facts.as_deref(), *json),
     }
 }
 
-fn status(state: &Path, json: bool) -> ExitCode {
-    match read_table(state) {
-        Ok(table) => {
-            let table = table.unwrap_or_default();
+fn fail(message: impl std::fmt::Display) -> ExitCode {
+    eprintln!("cdct: {message}");
+    ExitCode::FAILURE
+}
+
+fn load_config(explicit: Option<&Path>) -> Result<Config, String> {
+    match explicit {
+        Some(path) => Config::load(path).map_err(|error| error.to_string()),
+        None => match Config::default_path() {
+            Some(path) if path.exists() => Config::load(&path).map_err(|error| error.to_string()),
+            _ => Ok(Config::default()),
+        },
+    }
+}
+
+fn client_endpoint(cli: &Cli, config: &Config) -> Endpoint {
+    cli.endpoint.as_deref().map_or_else(
+        || Endpoint::LocalSocket(config.socket.clone()),
+        Endpoint::parse,
+    )
+}
+
+#[cfg(unix)]
+fn serve(cli: &Cli, socket: Option<&Path>) -> ExitCode {
+    let mut config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
+    };
+    if let Some(policy) = &cli.policy {
+        match Policy::load(Some(policy)) {
+            Ok(loaded) => config.policy = loaded,
+            Err(error) => return fail(error),
+        }
+    }
+    if let Some(socket) = socket {
+        config.socket = socket.to_path_buf();
+    }
+    if let Some(state) = cli
+        .state
+        .clone()
+        .or_else(|| std::env::var_os("CDCT_STATE").map(PathBuf::from))
+    {
+        config.state = state;
+    }
+    let running = match cdct::daemon::start(config) {
+        Ok(running) => running,
+        Err(error) => return fail(error),
+    };
+    println!("cdct: listening on {}", running.local_socket().display());
+    for (instance, path) in running.guest_sockets() {
+        println!("cdct: guest {instance} on {}", path.display());
+    }
+    let _ = std::io::stdout().flush();
+    loop {
+        std::thread::park();
+    }
+}
+
+fn status(cli: &Cli, json: bool) -> ExitCode {
+    let config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
+    };
+    let endpoint = client_endpoint(cli, &config);
+    let mut client = match Client::connect(&endpoint) {
+        Ok(client) => client,
+        Err(error) => return fail(error),
+    };
+    match client.ask(&Request::Status) {
+        Ok(Reply::Status { status }) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "path": state.display().to_string(),
-                        "present": state.exists(),
-                        "table": table,
-                    }))
-                    .expect("the holder table serialises")
-                );
-            } else if !state.exists() {
-                println!("no holder table at {}", state.display());
+                print_json(&status);
             } else {
-                println!("gpu owner: {}", table.gpu_owner);
-                println!("sequence: {}", table.seq);
-                println!("holders: {}", table.holders.len());
-                for holder in &table.holders {
-                    let instance = holder
-                        .instance
-                        .as_ref()
-                        .map_or_else(|| "-".to_owned(), InstanceId::to_string);
-                    let tenant = holder.tenant.as_deref().unwrap_or("-");
-                    println!(
-                        "  {} instance={} tenant={} class={:?} priority={} memory={}MiB devices={}",
-                        holder.id,
-                        instance,
-                        tenant,
-                        holder.class,
-                        holder.priority,
-                        holder.memory_mib,
-                        if holder.devices.is_empty() {
-                            "-".to_owned()
-                        } else {
-                            holder.devices.join(",")
-                        }
-                    );
+                for line in describe::status(&status) {
+                    println!("{line}");
                 }
             }
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("cdct: {error}");
-            ExitCode::FAILURE
-        }
+        Ok(other) => fail(format!("unexpected reply: {other:?}")),
+        Err(error) => fail(error),
     }
 }
 
-fn plan_switch(
-    policy_path: Option<&Path>,
-    state: &Path,
-    kernel: &KernelOwner,
-    facts_path: Option<&Path>,
-    json: bool,
-) -> ExitCode {
-    let policy = match Policy::load(policy_path) {
-        Ok(policy) => policy,
-        Err(error) => {
-            eprintln!("cdct: {error}");
-            return ExitCode::FAILURE;
-        }
+fn switch(cli: &Cli, name: &str, json: bool) -> ExitCode {
+    let config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
     };
+    let Some(target) = config.resolve(name) else {
+        let names = config.target_names();
+        return fail(format!(
+            "unknown kernel {name:?}; configured kernels: {}",
+            if names.is_empty() {
+                "(none)".to_owned()
+            } else {
+                names.join(", ")
+            }
+        ));
+    };
+    let endpoint = client_endpoint(cli, &config);
+    let mut client = match Client::connect(&endpoint) {
+        Ok(client) => client,
+        Err(error) => return fail(error),
+    };
+    match client.ask(&Request::Switch { target }) {
+        Ok(Reply::Switch { outcome }) => {
+            if json {
+                print_json(&outcome);
+            } else {
+                for line in describe::outcome(&outcome) {
+                    println!("{line}");
+                }
+            }
+            outcome_exit(&outcome)
+        }
+        Ok(other) => fail(format!("unexpected reply: {other:?}")),
+        Err(error) => fail(error),
+    }
+}
+
+fn watch(cli: &Cli, json: bool) -> ExitCode {
+    let config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
+    };
+    let endpoint = client_endpoint(cli, &config);
+    let mut client = match Client::connect(&endpoint) {
+        Ok(client) => client,
+        Err(error) => return fail(error),
+    };
+    if let Err(error) = client.send(&Request::Subscribe) {
+        return fail(error);
+    }
+    let mut stdout = std::io::stdout();
+    loop {
+        let reply = match client.receive() {
+            Ok(Some(reply)) => reply,
+            Ok(None) => return ExitCode::SUCCESS,
+            Err(error) => return fail(error),
+        };
+        if json {
+            let _ = writeln!(
+                stdout,
+                "{}",
+                serde_json::to_string(&reply).unwrap_or_default()
+            );
+        } else {
+            match &reply {
+                Reply::Subscribed { channel, status } => {
+                    let _ = writeln!(stdout, "subscribed on {}", describe::channel(channel));
+                    for line in describe::status(status) {
+                        let _ = writeln!(stdout, "{line}");
+                    }
+                }
+                Reply::Status { status } => {
+                    for line in describe::status(status) {
+                        let _ = writeln!(stdout, "{line}");
+                    }
+                }
+                Reply::Event { event } => {
+                    let _ = writeln!(stdout, "{}", describe::event(event));
+                }
+                other => {
+                    let _ = writeln!(stdout, "{other:?}");
+                }
+            }
+        }
+        let _ = stdout.flush();
+    }
+}
+
+fn plan_switch(cli: &Cli, kernel: &KernelOwner, facts: Option<&Path>, json: bool) -> ExitCode {
+    let config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
+    };
+    let policy = match &cli.policy {
+        Some(path) => match Policy::load(Some(path)) {
+            Ok(policy) => policy,
+            Err(error) => return fail(error),
+        },
+        None => config.policy,
+    };
+    let state = cli
+        .state
+        .clone()
+        .or_else(|| std::env::var_os("CDCT_STATE").map(PathBuf::from))
+        .unwrap_or(config.state);
     let conductor = Conductor::new(policy);
-    let table = match read_table(state) {
+    let table = match read_table(&state) {
         Ok(table) => table.unwrap_or_default(),
-        Err(error) => {
-            eprintln!("cdct: {error}");
-            return ExitCode::FAILURE;
-        }
+        Err(error) => return fail(error),
     };
-    let (memory, gpu) = match facts_path {
+    let (memory, gpu) = match facts {
         Some(path) => match FactsFile::read(path) {
             Ok(facts) => match facts.memory_snapshot(path) {
                 Ok(memory) => (memory, facts.gpu),
-                Err(error) => {
-                    eprintln!("cdct: {error}");
-                    return ExitCode::FAILURE;
-                }
+                Err(error) => return fail(error),
             },
-            Err(error) => {
-                eprintln!("cdct: {error}");
-                return ExitCode::FAILURE;
-            }
+            Err(error) => return fail(error),
         },
         None => match live_facts(&table) {
             Ok(facts) => facts,
-            Err(error) => {
-                eprintln!("cdct: {error}");
-                return ExitCode::FAILURE;
-            }
+            Err(error) => return fail(error),
         },
     };
     let outcome = conductor.switch(kernel, &gpu, &memory, &table);
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&outcome).expect("the switch outcome serialises")
-        );
+        print_json(&outcome);
     } else {
-        print_outcome(&outcome);
+        for line in describe::outcome(&outcome) {
+            println!("{line}");
+        }
     }
-    match outcome {
-        SwitchOutcome::Plan(_) | SwitchOutcome::AlreadyHeld { .. } => ExitCode::SUCCESS,
-        SwitchOutcome::Wait { .. } => ExitCode::from(2),
-        SwitchOutcome::Decline { .. } => ExitCode::from(3),
-    }
+    outcome_exit(&outcome)
 }
 
 fn live_facts(table: &cdct::HolderTable) -> Result<(MemorySnapshot, GpuState), String> {
@@ -225,92 +356,17 @@ fn live_facts(table: &cdct::HolderTable) -> Result<(MemorySnapshot, GpuState), S
     Ok((memory, gpu))
 }
 
-fn print_outcome(outcome: &SwitchOutcome) {
+fn outcome_exit(outcome: &SwitchOutcome) -> ExitCode {
     match outcome {
-        SwitchOutcome::AlreadyHeld { kernel } => {
-            println!("the card already belongs to {kernel}");
-        }
-        SwitchOutcome::Plan(plan) => {
-            println!("plan: switch the card to {}", plan.target);
-            if let Some(memory) = &plan.memory {
-                println!(
-                    "  memory: {} MiB admitted ({} MiB available, {} MiB freed by the plan, \
-                     {} MiB from swap)",
-                    memory.required_mib,
-                    memory.available_mib,
-                    memory.credited_mib,
-                    memory.via_swap_mib
-                );
-            }
-            if !plan.displaced.is_empty() {
-                let names: Vec<&str> = plan
-                    .displaced
-                    .iter()
-                    .map(|displaced| displaced.tenant.as_str())
-                    .collect();
-                println!("  displaced: {}", names.join(", "));
-            }
-            for (index, step) in plan.steps.iter().enumerate() {
-                println!("  {}. {}", index + 1, step_line(step));
-            }
-        }
-        SwitchOutcome::Wait { reason } => {
-            println!("wait: the target is not admitted now");
-            println!("  {}", refusal_line(reason));
-        }
-        SwitchOutcome::Decline { reason } => {
-            println!("decline: the target cannot be admitted");
-            println!("  {reason:?}");
-        }
+        SwitchOutcome::Plan(_) | SwitchOutcome::AlreadyHeld { .. } => ExitCode::SUCCESS,
+        SwitchOutcome::Wait { .. } => ExitCode::from(2),
+        SwitchOutcome::Decline { .. } => ExitCode::from(3),
     }
 }
 
-fn step_line(step: &PlanStep) -> String {
-    match step {
-        PlanStep::StopHostTenant { tenant, ladder } => {
-            format!("stop host tenant {tenant} ({ladder})")
-        }
-        PlanStep::StopInstance { instance, mode } => {
-            format!("stop instance {instance} ({mode:?})")
-        }
-        PlanStep::HandOverCard { device, from, to } => {
-            format!("hand the card {device} over: {from} -> {to}")
-        }
-        PlanStep::StartInstance { instance } => format!("start instance {instance}"),
-        PlanStep::StartHostTenant { tenant, ladder } => {
-            format!("start host tenant {tenant} ({ladder})")
-        }
-        PlanStep::SunshineFollows { kernel } => format!("Sunshine follows {kernel}"),
-    }
-}
-
-fn refusal_line(reason: &MemoryRefusal) -> String {
-    match reason {
-        MemoryRefusal::NotEnoughFree {
-            available_mib,
-            required_mib,
-            gap_mib,
-            ..
-        } => format!(
-            "not enough free memory: {required_mib} MiB needed, {available_mib} MiB available \
-             ({gap_mib} MiB short); nothing is displaced"
-        ),
-        MemoryRefusal::SwapNotAllowedUnderPressure {
-            gap_mib,
-            some_avg10,
-            full_avg10,
-            some_limit,
-            full_limit,
-        } => format!(
-            "swap would have to cover {gap_mib} MiB but memory pressure is too high \
-             (some {some_avg10:?}% / {some_limit}%, full {full_avg10:?}% / {full_limit}%)"
-        ),
-        MemoryRefusal::ClaimExceedsHostCapacity {
-            required_mib,
-            ram_mib,
-        } => format!(
-            "the claim ({required_mib} MiB) exceeds this host's physical RAM ({ram_mib} MiB); \
-             the claim is pinned, so swap cannot make it fit"
-        ),
-    }
+fn print_json(value: &impl Serialize) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).expect("the value serialises")
+    );
 }

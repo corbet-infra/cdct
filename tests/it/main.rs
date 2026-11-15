@@ -21,6 +21,12 @@ use cdrv::{
 };
 use fs2::FileExt;
 
+mod config;
+#[cfg(unix)]
+mod daemon;
+mod protocol;
+mod tray;
+
 const GIB_MIB: u64 = 1024;
 const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 
