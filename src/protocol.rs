@@ -13,6 +13,7 @@ use cdrv::{Event, InstanceClass, InstanceId, KernelOwner};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::gpu::DisplacedTenant;
 use crate::holders::HolderState;
 use crate::memory::MemoryRefusal;
 use crate::plan::{SwitchOutcome, SwitchPlan, SwitchRefusal};
@@ -39,6 +40,14 @@ pub enum Request {
     /// one [`Reply::Granted`] per granted switch, one [`Reply::Event`] per change and a fresh [`Reply::Status`] after the
     /// event that changed the state.
     Subscribe,
+    /// Store the live replica counts of the displaced tenants with the card's
+    /// holder. Only the local socket may send it: the executor reads the real
+    /// counts before it stops the tenants. The daemon is the only writer of the
+    /// holder table, so the executor never opens it.
+    RecordDisplaced {
+        /// The displaced tenants, with their real replica counts.
+        displaced: Vec<DisplacedTenant>,
+    },
 }
 
 /// Where a connection came from.
@@ -172,6 +181,11 @@ pub enum Reply {
     Granted {
         /// The plan the switcher received.
         plan: SwitchPlan,
+    },
+    /// The answer to [`Request::RecordDisplaced`].
+    Recorded {
+        /// The identifier of the holder that now carries the list.
+        holder: String,
     },
     /// One pushed state change.
     Event {

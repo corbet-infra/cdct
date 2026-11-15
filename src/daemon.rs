@@ -33,7 +33,7 @@ use listenfd::ListenFd;
 use crate::config::{Config, InstanceConfig};
 use crate::engine::{Conductor, FactsFile};
 use crate::facts::MemorySnapshot;
-use crate::gpu::{GpuState, GpuTenant, InstanceObservation, TenantState};
+use crate::gpu::{DisplacedTenant, GpuState, GpuTenant, InstanceObservation, TenantState};
 use crate::holders::{Holder, HolderState, HolderStore, HolderTable};
 use crate::plan::SwitchOutcome;
 use crate::protocol::{
@@ -335,6 +335,27 @@ impl Inner {
         Ok((outcome, events))
     }
 
+    /// Replace the displaced list of the current guest owner's custodian holder
+    /// and save the table. Returns the holder's identifier.
+    fn record_displaced(&mut self, displaced: Vec<DisplacedTenant>) -> Result<String, String> {
+        let Some(owner) = self.table.gpu_owner.guest().cloned() else {
+            return Err("the host kernel holds the card; nothing was displaced".to_owned());
+        };
+        let Some(holder) =
+            self.table.holders.iter_mut().find(|holder| {
+                holder.is_card_custodian() && holder.instance.as_ref() == Some(&owner)
+            })
+        else {
+            return Err(format!("no card holder exists for `{owner}`"));
+        };
+        holder.displaced = displaced;
+        let id = holder.id.to_string();
+        self.store
+            .save(&self.table)
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    }
+
     /// Push the events of one change, then a fresh status snapshot.
     fn publish(&mut self, events: &[Event]) {
         let status = self.status().ok();
@@ -551,6 +572,25 @@ fn serve_connection(shared: Arc<Mutex<Inner>>, stream: UnixStream, channel: Chan
             }
         };
         match request {
+            Request::RecordDisplaced { displaced } => {
+                let reply = if channel == Channel::Local {
+                    let mut inner = lock(&shared);
+                    match inner.record_displaced(displaced) {
+                        Ok(holder) => {
+                            inner.publish(&[]);
+                            Reply::Recorded { holder }
+                        }
+                        Err(message) => Reply::Error { message },
+                    }
+                } else {
+                    Reply::Error {
+                        message: "record_displaced is accepted on the local socket only".to_owned(),
+                    }
+                };
+                if send(&mut writer, &reply).is_err() {
+                    return;
+                }
+            }
             Request::Subscribe => {
                 subscribe(Arc::clone(&shared), writer, channel);
                 return;

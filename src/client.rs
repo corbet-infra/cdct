@@ -179,6 +179,20 @@ impl Client {
         })
     }
 
+    /// Store the live replica counts of the displaced tenants with the card's
+    /// holder and return the holder's identifier. Local socket only.
+    pub fn record_displaced(
+        &mut self,
+        displaced: &[crate::gpu::DisplacedTenant],
+    ) -> Result<String, ClientError> {
+        match self.ask(&Request::RecordDisplaced {
+            displaced: displaced.to_vec(),
+        })? {
+            Reply::Recorded { holder } => Ok(holder),
+            other => Err(ClientError::Unexpected(reply_name(&other))),
+        }
+    }
+
     fn read_line(&mut self) -> Result<Option<String>, ClientError> {
         loop {
             if let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
@@ -206,6 +220,7 @@ fn reply_name(reply: &Reply) -> &'static str {
         Reply::Plan { .. } => "plan",
         Reply::Switch { .. } => "switch",
         Reply::Granted { .. } => "granted",
+        Reply::Recorded { .. } => "recorded",
         Reply::Event { .. } => "event",
         Reply::Error { .. } => "error",
     }

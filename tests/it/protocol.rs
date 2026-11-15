@@ -193,3 +193,25 @@ fn a_granted_plan_is_tagged_granted_on_the_wire() {
         reply
     );
 }
+
+#[test]
+fn record_displaced_and_recorded_use_stable_tags() {
+    let request = Request::RecordDisplaced {
+        displaced: vec![cdct::DisplacedTenant {
+            tenant: "a".to_owned(),
+            ladder: GpuLadder::Desktop,
+            replicas: 2,
+        }],
+    };
+    assert_eq!(
+        protocol::encode(&request).expect("the request encodes"),
+        r#"{"request":"record_displaced","displaced":[{"tenant":"a","ladder":"gpu-desktop","replicas":2}]}"#
+    );
+    let reply = Reply::Recorded {
+        holder: "card-mac".to_owned(),
+    };
+    assert_eq!(
+        protocol::encode(&reply).expect("the reply encodes"),
+        r#"{"reply":"recorded","holder":"card-mac"}"#
+    );
+}

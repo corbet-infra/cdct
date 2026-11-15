@@ -7,7 +7,7 @@ use cdct::client::{Client, Endpoint};
 use cdct::config::{Config, InstanceConfig, TargetConfig, TenantConfig};
 use cdct::holders::read_table;
 use cdct::protocol::{Availability, Channel, Reply, Request, Status};
-use cdct::{KernelOwner, MemoryRefusal, PlanStep, Policy, SwitchOutcome};
+use cdct::{DisplacedTenant, KernelOwner, MemoryRefusal, PlanStep, Policy, SwitchOutcome};
 use cdrv::{GpuLadder, GuestOs, InstanceClass, InstanceId};
 
 use super::{GIB_MIB, TempTree, guest, meminfo_text, pressure_text};
@@ -436,4 +436,83 @@ fn a_switch_that_changes_nothing_pushes_no_granted_plan() {
         watcher.receive().expect("the grant arrives"),
         Some(Reply::Granted { .. })
     ));
+}
+
+fn restore_counts(plan: &cdct::SwitchPlan) -> Vec<(String, u32)> {
+    plan.steps
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::StartHostTenant {
+                tenant, replicas, ..
+            } => Some((tenant.clone(), *replicas)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn recorded_replica_counts_reach_the_switch_back_and_survive_a_restart() {
+    let tree = TempTree::new("daemon-record");
+    let mut config = configuration(&tree, 40 * GIB_MIB);
+    config.tenants = vec![declared_tenants().remove(0)];
+    let running = cdct::daemon::start(config.clone()).expect("the daemon starts");
+    let mut client = connect(running.local_socket());
+    switch(&mut client, guest("mac"));
+
+    let recorded = vec![DisplacedTenant {
+        tenant: "llm/broker".to_owned(),
+        ladder: GpuLadder::Interactive,
+        replicas: 3,
+    }];
+    let holder = client
+        .record_displaced(&recorded)
+        .expect("the local socket may record");
+    assert_eq!(holder, "card-mac");
+    let back = plan_of(
+        &mut client,
+        Request::PlanSwitch {
+            target: KernelOwner::Host,
+        },
+    );
+    assert_eq!(restore_counts(&back), vec![("llm/broker".to_owned(), 3)]);
+
+    drop(client);
+    drop(running);
+    let running = cdct::daemon::start(config).expect("the daemon restarts");
+    let mut client = connect(running.local_socket());
+    let back = plan_of(
+        &mut client,
+        Request::PlanSwitch {
+            target: KernelOwner::Host,
+        },
+    );
+    assert_eq!(restore_counts(&back), vec![("llm/broker".to_owned(), 3)]);
+}
+
+#[test]
+fn a_guest_channel_cannot_record_displaced_tenants() {
+    let tree = TempTree::new("daemon-record-guest");
+    let running = start(&tree, 40 * GIB_MIB);
+    let mut local = connect(running.local_socket());
+    switch(&mut local, guest("mac"));
+    let path = running
+        .guest_socket(&InstanceId::from("mac"))
+        .expect("the guest channel is bound")
+        .to_path_buf();
+    let mut guest_client = connect(&path);
+    let error = guest_client
+        .record_displaced(&[])
+        .expect_err("the guest channel is refused");
+    assert!(error.to_string().contains("local socket"), "{error}");
+}
+
+#[test]
+fn recording_needs_a_guest_that_holds_the_card() {
+    let tree = TempTree::new("daemon-record-host");
+    let running = start(&tree, 40 * GIB_MIB);
+    let mut client = connect(running.local_socket());
+    let error = client
+        .record_displaced(&[])
+        .expect_err("the host owns the card");
+    assert!(error.to_string().contains("host kernel"), "{error}");
 }

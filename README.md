@@ -151,15 +151,25 @@ Windows).
 
 ## Protocol
 
-One JSON message per line. A request is `status`, `plan_switch`, `switch` or
-`subscribe`:
+One JSON message per line. A request is `status`, `plan_switch`, `switch`,
+`subscribe` or `record_displaced`:
 
 ```json
 {"request":"status"}
 {"request":"switch","target":{"guest":"mac"}}
 {"request":"plan_switch","target":"host"}
 {"request":"subscribe"}
+{"request":"record_displaced","displaced":[{"tenant":"a","ladder":"gpu-desktop","replicas":2}]}
 ```
+
+`record_displaced` is for the executor and is accepted on the local socket
+only; a guest channel gets an `error`. The planner records a placeholder
+`replicas: 1` per displaced tenant; the executor reads the real count before it
+stops a tenant and sends the list here. The daemon replaces the `displaced`
+list of the card holder of the current guest owner, saves the table, pushes a
+fresh `status` and answers `{"reply":"recorded","holder":"card-mac"}`. It
+answers `error` when the host owns the card or no card holder exists. Nothing
+else opens the holder table: the daemon holds its lock for its life.
 
 A single question receives one `status`, `plan` or `switch` reply, or an
 `error`. A subscription first receives a `subscribed` reply (its channel
