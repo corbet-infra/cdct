@@ -49,7 +49,7 @@ pub mod reconcile;
 pub mod tray;
 
 pub use client::{Client, ClientError, Endpoint, Stream};
-pub use config::{Config, ConfigError, InstanceConfig, TargetConfig};
+pub use config::{Config, ConfigError, InstanceConfig, TargetConfig, TenantConfig};
 pub use describe::{availability, event, memory_refusal, outcome, status, switch_refusal};
 pub use engine::{Conductor, FactsError, FactsFile};
 pub use facts::{

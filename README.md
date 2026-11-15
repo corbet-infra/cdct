@@ -59,6 +59,9 @@ defaults are the standard paths. This example is synthetic:
      "kernel": {"guest": "mac"}},
     {"name": "windows", "label": "Boot Windows", "holder": "Windows",
      "kernel": {"guest": "windows-desktop"}}
+  ],
+  "tenants": [
+    {"id": "llm/example-broker", "ladder": "gpu-interactive"}
   ]
 }
 ```
@@ -71,6 +74,12 @@ it uses the built-in defaults. `socket_mode` is decimal (`432` is `0660`), and
 carries the observed host tenants and instances; configured instances it does
 not mention are added from the configuration. Without it, memory is read live
 and only the configured instances are observed.
+
+`tenants` declares the host tenants of the card when no facts document is
+configured. They count as `running` while the host kernel owns the card and as
+`stopped` otherwise, so a switch to a guest plans one `stop_host_tenant` per
+tenant (lowest ladder rung first) and the switch back restores exactly that
+set. With a facts document, its tenants win.
 
 ## Running
 

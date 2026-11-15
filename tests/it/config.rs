@@ -95,3 +95,15 @@ fn a_missing_configuration_file_is_an_error() {
     let tree = TempTree::new("config-missing");
     assert!(Config::load(tree.path().join("absent.json")).is_err());
 }
+
+#[test]
+fn declared_tenants_parse_with_their_ladder() {
+    let config = Config::from_json(
+        r#"{"tenants": [{"id": "llm/example-broker", "ladder": "gpu-interactive"}]}"#,
+    )
+    .expect("the tenants parse");
+    assert_eq!(config.tenants.len(), 1);
+    assert_eq!(config.tenants[0].id, "llm/example-broker");
+    assert_eq!(config.tenants[0].ladder, cdrv::GpuLadder::Interactive);
+    assert!(configured().tenants.is_empty());
+}

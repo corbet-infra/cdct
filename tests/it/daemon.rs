@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use cdct::client::{Client, Endpoint};
-use cdct::config::{Config, InstanceConfig, TargetConfig};
+use cdct::config::{Config, InstanceConfig, TargetConfig, TenantConfig};
 use cdct::holders::read_table;
 use cdct::protocol::{Availability, Channel, Reply, Request, Status};
-use cdct::{KernelOwner, MemoryRefusal, Policy, SwitchOutcome};
-use cdrv::{GuestOs, InstanceClass, InstanceId};
+use cdct::{KernelOwner, MemoryRefusal, PlanStep, Policy, SwitchOutcome};
+use cdrv::{GpuLadder, GuestOs, InstanceClass, InstanceId};
 
 use super::{GIB_MIB, TempTree, guest, meminfo_text, pressure_text};
 
@@ -59,6 +59,7 @@ fn configuration(tree: &TempTree, available_mib: u64) -> Config {
                 kernel: guest("mac"),
             },
         ],
+        tenants: Vec::new(),
     }
 }
 
@@ -294,4 +295,75 @@ fn a_stale_socket_file_does_not_stop_the_daemon_starting() {
     assert!(config.socket.exists());
     let running = cdct::daemon::start(config).expect("the daemon replaces the stale socket");
     drop(running);
+}
+
+fn declared_tenants() -> Vec<TenantConfig> {
+    vec![
+        TenantConfig {
+            id: "llm/broker".to_owned(),
+            ladder: GpuLadder::Interactive,
+        },
+        TenantConfig {
+            id: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+        },
+    ]
+}
+
+fn plan_of(client: &mut Client, request: Request) -> cdct::SwitchPlan {
+    match client.ask(&request).expect("the plan is answered") {
+        Reply::Plan {
+            outcome: SwitchOutcome::Plan(plan),
+        } => plan,
+        other => panic!("expected a plan, got {other:?}"),
+    }
+}
+
+#[test]
+fn declared_tenants_are_displaced_and_restored_without_a_facts_file() {
+    let tree = TempTree::new("daemon-tenants");
+    let mut config = configuration(&tree, 40 * GIB_MIB);
+    config.tenants = declared_tenants();
+    let running = cdct::daemon::start(config).expect("the daemon starts");
+    let mut client = connect(running.local_socket());
+
+    let plan = plan_of(
+        &mut client,
+        Request::PlanSwitch {
+            target: guest("mac"),
+        },
+    );
+    let stops: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::StopHostTenant { tenant, .. } => Some(tenant.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stops,
+        vec!["render/farm", "llm/broker"],
+        "lowest rung first"
+    );
+    let displaced: Vec<&str> = plan.displaced.iter().map(|d| d.tenant.as_str()).collect();
+    assert_eq!(displaced, stops);
+
+    switch(&mut client, guest("mac"));
+    let back = plan_of(
+        &mut client,
+        Request::PlanSwitch {
+            target: KernelOwner::Host,
+        },
+    );
+    let mut starts: Vec<&str> = back
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::StartHostTenant { tenant, .. } => Some(tenant.as_str()),
+            _ => None,
+        })
+        .collect();
+    starts.sort_unstable();
+    assert_eq!(starts, vec!["llm/broker", "render/farm"]);
 }

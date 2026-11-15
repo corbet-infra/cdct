@@ -33,7 +33,7 @@ use listenfd::ListenFd;
 use crate::config::{Config, InstanceConfig};
 use crate::engine::{Conductor, FactsFile};
 use crate::facts::MemorySnapshot;
-use crate::gpu::{GpuState, InstanceObservation};
+use crate::gpu::{GpuState, GpuTenant, InstanceObservation, TenantState};
 use crate::holders::{Holder, HolderState, HolderStore, HolderTable};
 use crate::plan::SwitchOutcome;
 use crate::protocol::{
@@ -130,7 +130,27 @@ impl Inner {
                 MemorySnapshot::parse(&raw).map_err(|error| error.to_string())?
             }
         };
+        let declared = document.is_none();
         let mut gpu = document.map(|(_, facts)| facts.gpu).unwrap_or_default();
+        if declared {
+            // No facts document: the declared tenants hold the card exactly
+            // while the host kernel does.
+            let state = if self.table.gpu_owner.is_host() {
+                TenantState::Running
+            } else {
+                TenantState::Stopped
+            };
+            gpu.tenants = self
+                .config
+                .tenants
+                .iter()
+                .map(|tenant| GpuTenant {
+                    id: tenant.id.clone(),
+                    ladder: tenant.ladder,
+                    state,
+                })
+                .collect();
+        }
         if !self.config.gpu_device.is_empty() {
             gpu.device = self.config.gpu_device.clone();
         }

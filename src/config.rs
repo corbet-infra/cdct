@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cdrv::{GuestOs, InstanceClass, InstanceId, KernelOwner};
+use cdrv::{GpuLadder, GuestOs, InstanceClass, InstanceId, KernelOwner};
 use serde::{Deserialize, Serialize};
 
 use crate::policy::Policy;
@@ -61,6 +61,15 @@ pub struct TargetConfig {
     pub kernel: KernelOwner,
 }
 
+/// One host tenant of the card, declared when no facts document reports them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantConfig {
+    /// The tenant's name in the platform (`llm/llama-broker`).
+    pub id: String,
+    /// Its ladder rung.
+    pub ladder: GpuLadder,
+}
+
 impl TargetConfig {
     /// The label to show when this target holds the card.
     #[must_use]
@@ -100,6 +109,8 @@ pub struct Config {
     pub instances: Vec<InstanceConfig>,
     /// The kernels the CLI names and the tray offers.
     pub targets: Vec<TargetConfig>,
+    /// The host tenants of the card, used when no facts document reports them.
+    pub tenants: Vec<TenantConfig>,
 }
 
 impl Default for Config {
@@ -116,6 +127,7 @@ impl Default for Config {
             policy: Policy::default(),
             instances: Vec::new(),
             targets: Vec::new(),
+            tenants: Vec::new(),
         }
     }
 }
