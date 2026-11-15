@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use cdct::client::{Client, Endpoint};
 use cdct::config::Config;
-use cdct::protocol::{Reply, Request};
+use cdct::protocol::{Reply, Request, TargetStatus};
 use cdct::{
     Conductor, FactsFile, GpuState, MemorySnapshot, Policy, ProcReader, SwitchOutcome, describe,
     holders::read_table,
@@ -203,18 +203,34 @@ fn switch(cli: &Cli, name: &str, json: bool) -> ExitCode {
         Ok(config) => config,
         Err(error) => return fail(error),
     };
-    let Some(target) = config.resolve(name) else {
-        let names = config.target_names();
-        return fail(format!(
-            "unknown kernel {name:?}; configured kernels: {}",
-            if names.is_empty() {
-                "(none)".to_owned()
-            } else {
-                names.join(", ")
-            }
-        ));
-    };
     let endpoint = client_endpoint(cli, &config);
+    // A name this client's configuration does not know is resolved through the
+    // daemon's own targets, so a shell or a seat without the configuration file
+    // still switches by name.
+    let target = match config.resolve(name) {
+        Some(target) => target,
+        None => {
+            let advertised = match advertised_targets(&endpoint) {
+                Ok(advertised) => advertised,
+                Err(error) => return fail(error),
+            };
+            let Some(target) = config.resolve_advertised(name, &advertised) else {
+                let names: Vec<&str> = advertised
+                    .iter()
+                    .map(|target| target.name.as_str())
+                    .collect();
+                return fail(format!(
+                    "unknown kernel {name:?}; the conductor's kernels: {}",
+                    if names.is_empty() {
+                        "(none)".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                ));
+            };
+            target
+        }
+    };
     let mut client = match Client::connect(&endpoint) {
         Ok(client) => client,
         Err(error) => return fail(error),
@@ -232,6 +248,16 @@ fn switch(cli: &Cli, name: &str, json: bool) -> ExitCode {
         }
         Ok(other) => fail(format!("unexpected reply: {other:?}")),
         Err(error) => fail(error),
+    }
+}
+
+/// The targets the daemon advertises in its status.
+fn advertised_targets(endpoint: &Endpoint) -> Result<Vec<TargetStatus>, String> {
+    let mut client = Client::connect(endpoint).map_err(|error| error.to_string())?;
+    match client.ask(&Request::Status) {
+        Ok(Reply::Status { status }) => Ok(status.targets),
+        Ok(other) => Err(format!("unexpected reply: {other:?}")),
+        Err(error) => Err(error.to_string()),
     }
 }
 

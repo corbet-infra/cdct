@@ -121,7 +121,10 @@ cdct plan switch guest:mac --facts facts.json   # offline; changes nothing
 ```
 
 `cdct switch` resolves a configured target name (`macos`, `windows`, `linux`);
-`host` and `guest:<instance>` are always accepted. It prints a plan or the
+`host` and `guest:<instance>` are always accepted. A name the client's own
+configuration does not know is looked up in the targets the daemon advertises
+in its status, so a shell without `$CDCT_CONFIG`, or a seat that reaches the
+daemon through a forwarded socket, switches by the same names. It prints a plan or the
 plain reason it waits or is declined. Exit status: `0` plan or already held,
 `2` wait, `3` decline, `1` error.
 

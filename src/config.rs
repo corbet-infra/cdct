@@ -15,6 +15,7 @@ use cdrv::{GpuLadder, GuestOs, InstanceClass, InstanceId, KernelOwner};
 use serde::{Deserialize, Serialize};
 
 use crate::policy::Policy;
+use crate::protocol::TargetStatus;
 
 /// Default location of the local control socket.
 pub const DEFAULT_SOCKET: &str = "/run/cdct/control.sock";
@@ -180,6 +181,27 @@ impl Config {
             .strip_prefix("guest:")
             .filter(|instance| !instance.is_empty())
             .map(|instance| KernelOwner::Guest(InstanceId::from(instance)))
+    }
+
+    /// Resolve a target name as [`Self::resolve`] does, then through the
+    /// targets a daemon advertises in its status.
+    ///
+    /// A client without the daemon's configuration file (an operator shell
+    /// without `$CDCT_CONFIG`, a seat that reaches the conductor through a
+    /// forwarded socket) still switches by the familiar names: the daemon's
+    /// own targets are the authority for them.
+    #[must_use]
+    pub fn resolve_advertised(
+        &self,
+        value: &str,
+        advertised: &[TargetStatus],
+    ) -> Option<KernelOwner> {
+        self.resolve(value).or_else(|| {
+            advertised
+                .iter()
+                .find(|target| target.name == value)
+                .map(|target| target.kernel.clone())
+        })
     }
 
     /// The configured target names, in configuration order.

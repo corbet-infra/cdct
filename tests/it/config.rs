@@ -1,6 +1,7 @@
 //! The configuration: defaults, names and the holder labels.
 
 use cdct::config::{Config, TargetConfig};
+use cdct::protocol::{Availability, TargetStatus};
 use cdrv::{InstanceId, KernelOwner};
 
 use super::{TempTree, guest};
@@ -63,6 +64,46 @@ fn configured_names_resolve_to_their_kernels() {
     assert_eq!(config.resolve("guest:"), None);
     assert_eq!(config.resolve("amiga"), None);
     assert_eq!(config.target_names(), vec!["linux", "macos", "windows"]);
+}
+
+#[test]
+fn a_client_without_the_configuration_resolves_through_the_advertised_targets() {
+    let advertised = vec![
+        TargetStatus {
+            name: "linux".to_owned(),
+            label: "Back to Linux".to_owned(),
+            kernel: KernelOwner::Host,
+            availability: Availability::AlreadyHeld,
+        },
+        TargetStatus {
+            name: "macos".to_owned(),
+            label: "Boot macOS".to_owned(),
+            kernel: guest("mac"),
+            availability: Availability::Ready,
+        },
+    ];
+    let bare = Config::default();
+    assert_eq!(bare.resolve("macos"), None);
+    assert_eq!(
+        bare.resolve_advertised("macos", &advertised),
+        Some(guest("mac"))
+    );
+    assert_eq!(
+        bare.resolve_advertised("linux", &advertised),
+        Some(KernelOwner::Host)
+    );
+    assert_eq!(
+        bare.resolve_advertised("guest:other", &advertised),
+        Some(guest("other"))
+    );
+    assert_eq!(bare.resolve_advertised("amiga", &advertised), None);
+    // The client's own configuration wins over the advertised targets.
+    let mut local = configured();
+    local.targets[1].kernel = guest("mac-local");
+    assert_eq!(
+        local.resolve_advertised("macos", &advertised),
+        Some(guest("mac-local"))
+    );
 }
 
 #[test]
