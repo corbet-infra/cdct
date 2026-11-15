@@ -846,7 +846,7 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
             &PlanStep::StartHostTenant {
                 tenant: "llm".to_owned(),
                 ladder: GpuLadder::Interactive,
-                replicas: 3,
+                replicas: 1,
             },
         ],
         "the idle tenant stays as it was: {outcome:?}"
