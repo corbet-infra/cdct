@@ -148,6 +148,12 @@ fn host_gpu() -> GpuState {
                 GuestOs::Windows,
                 InstanceState::Running,
             ),
+            observation(
+                "dev",
+                InstanceClass::Dev,
+                GuestOs::Linux,
+                InstanceState::Running,
+            ),
         ],
     }
 }
@@ -589,6 +595,32 @@ fn a_windows_switch_credits_the_office_profile_it_stops() {
     assert_eq!(admission.credited_mib, 4 * GIB_MIB);
     assert_eq!(admission.available_mib, 26 * GIB_MIB);
     assert_eq!(admission.via_swap_mib, 0);
+}
+
+#[test]
+fn a_switch_to_an_unobserved_guest_is_declined() {
+    assert_eq!(
+        switch(&guest("ghost"), &host_gpu(), &snapshot(40 * GIB_MIB)),
+        SwitchOutcome::Decline {
+            reason: SwitchRefusal::UnknownTarget {
+                instance: InstanceId::from("ghost"),
+            },
+        },
+        "a plan never starts an instance that is not there"
+    );
+}
+
+#[test]
+fn a_switch_to_a_non_desktop_instance_is_declined() {
+    assert_eq!(
+        switch(&guest("dev"), &host_gpu(), &snapshot(40 * GIB_MIB)),
+        SwitchOutcome::Decline {
+            reason: SwitchRefusal::NotADesktopInstance {
+                instance: InstanceId::from("dev"),
+                class: InstanceClass::Dev,
+            },
+        }
+    );
 }
 
 #[test]

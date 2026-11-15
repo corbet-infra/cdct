@@ -73,6 +73,18 @@ pub enum SwitchRefusal {
         /// The office instance.
         instance: InstanceId,
     },
+    /// The target is not an observed instance: nothing is planned to start.
+    UnknownTarget {
+        /// The instance that was asked for.
+        instance: InstanceId,
+    },
+    /// The target is observed but is not a GPU (desktop) instance.
+    NotADesktopInstance {
+        /// The instance that was asked for.
+        instance: InstanceId,
+        /// The class it actually has.
+        class: InstanceClass,
+    },
 }
 
 /// A switch plan, with the memory it was admitted against and what it
@@ -148,11 +160,25 @@ fn guest_plan(
     memory: &MemorySnapshot,
     policy: &Policy,
 ) -> SwitchOutcome {
-    let observed = gpu.instance(id);
-    if observed.is_some_and(|instance| instance.class == InstanceClass::Office) {
+    let Some(observed) = gpu.instance(id) else {
+        return SwitchOutcome::Decline {
+            reason: SwitchRefusal::UnknownTarget {
+                instance: id.clone(),
+            },
+        };
+    };
+    if observed.class == InstanceClass::Office {
         return SwitchOutcome::Decline {
             reason: SwitchRefusal::OfficeProfileCannotHoldTheCard {
                 instance: id.clone(),
+            },
+        };
+    }
+    if observed.class != InstanceClass::Desktop {
+        return SwitchOutcome::Decline {
+            reason: SwitchRefusal::NotADesktopInstance {
+                instance: id.clone(),
+                class: observed.class,
             },
         };
     }
@@ -161,12 +187,11 @@ fn guest_plan(
     // resident memory is credited to the admission, because the plan frees it
     // before the target needs it.
     let current = gpu.owner.guest().filter(|current| *current != id);
-    let offices: Vec<&InstanceId> =
-        if observed.is_some_and(|instance| instance.guest_os == GuestOs::Windows) {
-            running_office_profiles(gpu)
-        } else {
-            Vec::new()
-        };
+    let offices: Vec<&InstanceId> = if observed.guest_os == GuestOs::Windows {
+        running_office_profiles(gpu)
+    } else {
+        Vec::new()
+    };
     let credited_mib = current
         .and_then(|current| gpu.instance(current))
         .into_iter()
@@ -176,7 +201,7 @@ fn guest_plan(
         .fold(0_u64, u64::saturating_add);
 
     let claim_mib = observed
-        .and_then(|instance| instance.memory_mib)
+        .memory_mib
         .unwrap_or(policy.memory.gpu_vm_claim_mib);
     let admission = match decide_memory_with_credit(memory, claim_mib, credited_mib, &policy.memory)
     {
