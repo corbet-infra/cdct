@@ -288,7 +288,7 @@ fn a_second_daemon_cannot_take_the_writer_lock() {
 
 #[test]
 fn a_stale_socket_file_does_not_stop_the_daemon_starting() {
-    let tree = TempTree::new();
+    let tree = TempTree::new("daemon-stale");
     let config = configuration(&tree, 100 * 1024);
     drop(std::os::unix::net::UnixListener::bind(&config.socket).expect("a leftover socket"));
     assert!(config.socket.exists());
