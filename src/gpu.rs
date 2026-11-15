@@ -1,92 +1,19 @@
 //! The GPU model: one kernel owns the card, and inside the host kernel the
 //! tenants share it by the platform's priority ladder.
 //!
+//! [`KernelOwner`] and [`GpuLadder`] are the contract's (`cdrv`), shared with
+//! the drivers that execute a switch; this module re-exports them.
+//!
 //! The four starvation signals are typed inputs. The one arbitration rule is a
 //! decision that names the lowest-priority running tenant to scale to zero;
 //! `cdct` never performs the scale, the bounce or any other device action.
+
+pub use cdrv::{GpuLadder, KernelOwner};
 
 use cdrv::{GuestOs, InstanceClass, InstanceId, InstanceState, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::policy::GpuPolicy;
-
-/// Which kernel currently owns the card.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KernelOwner {
-    /// The host kernel; its tenants share the card by the ladder.
-    Host,
-    /// One guest kernel; no host tenant may hold the card.
-    Guest(InstanceId),
-}
-
-impl KernelOwner {
-    /// Whether this is the host kernel.
-    #[must_use]
-    pub fn is_host(&self) -> bool {
-        matches!(self, Self::Host)
-    }
-
-    /// The guest instance, when a guest owns the card.
-    #[must_use]
-    pub fn guest(&self) -> Option<&InstanceId> {
-        match self {
-            Self::Host => None,
-            Self::Guest(id) => Some(id),
-        }
-    }
-}
-
-impl std::fmt::Display for KernelOwner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Host => f.write_str("host"),
-            Self::Guest(id) => write!(f, "guest:{id}"),
-        }
-    }
-}
-
-/// The platform's host-side GPU priority ladder, highest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GpuLadder {
-    /// `gpu-desktop`: the interactive desktop session.
-    #[serde(rename = "gpu-desktop")]
-    Desktop,
-    /// `gpu-interactive`: latency-sensitive serving tenants.
-    #[serde(rename = "gpu-interactive")]
-    Interactive,
-    /// `gpu-besteffort`: batch and hobby tenants.
-    #[serde(rename = "gpu-besteffort")]
-    BestEffort,
-}
-
-impl GpuLadder {
-    /// The platform PriorityClass value of this rung.
-    #[must_use]
-    pub const fn priority(self) -> u32 {
-        match self {
-            Self::Desktop => 1_000_000,
-            Self::Interactive => 1_000,
-            Self::BestEffort => 100,
-        }
-    }
-
-    /// The platform's name for this rung.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Desktop => "gpu-desktop",
-            Self::Interactive => "gpu-interactive",
-            Self::BestEffort => "gpu-besteffort",
-        }
-    }
-}
-
-impl std::fmt::Display for GpuLadder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
-    }
-}
 
 /// One host-side GPU tenant: a pod or the desktop session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
