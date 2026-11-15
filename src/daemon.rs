@@ -424,6 +424,13 @@ fn bind_listener(
             source,
         })?;
     }
+    // The writer lock is held, so a socket file left here is stale (the
+    // previous daemon was killed before it could remove it).
+    if fs::symlink_metadata(path)
+        .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+    {
+        let _ = fs::remove_file(path);
+    }
     let listener = UnixListener::bind(path).map_err(|source| ServeError::Socket {
         path: path.display().to_string(),
         source,
@@ -471,8 +478,10 @@ fn accept_loop(
         if stopped.load(Ordering::SeqCst) {
             break;
         }
+        // A transient accept error (descriptor exhaustion, an aborted
+        // connection) must not end the listener.
         let Ok(stream) = stream else {
-            break;
+            continue;
         };
         let shared = Arc::clone(&shared);
         let channel = channel.clone();

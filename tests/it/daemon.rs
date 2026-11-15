@@ -285,3 +285,13 @@ fn a_second_daemon_cannot_take_the_writer_lock() {
         "the second daemon reports the conflict: {second}"
     );
 }
+
+#[test]
+fn a_stale_socket_file_does_not_stop_the_daemon_starting() {
+    let tree = TempTree::new();
+    let config = configuration(&tree, 100 * 1024);
+    drop(std::os::unix::net::UnixListener::bind(&config.socket).expect("a leftover socket"));
+    assert!(config.socket.exists());
+    let running = cdct::daemon::start(config).expect("the daemon replaces the stale socket");
+    drop(running);
+}
