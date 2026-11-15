@@ -48,6 +48,14 @@ pub enum Request {
         /// The displaced tenants, with their real replica counts.
         displaced: Vec<DisplacedTenant>,
     },
+    /// The executor ran a granted plan to its end. Only the local socket may
+    /// send it. A switch back to the host releases the guest's holder (and the
+    /// displaced list it carries) only now: until then the guest still owns
+    /// the card, so a failed return can be asked for again.
+    Completed {
+        /// The kernel the completed plan gave the card to.
+        target: KernelOwner,
+    },
 }
 
 /// Where a connection came from.
@@ -186,6 +194,11 @@ pub enum Reply {
     Recorded {
         /// The identifier of the holder that now carries the list.
         holder: String,
+    },
+    /// The answer to [`Request::Completed`].
+    Completed {
+        /// Who owns the card now.
+        owner: KernelOwner,
     },
     /// One pushed state change.
     Event {

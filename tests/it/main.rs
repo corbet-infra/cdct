@@ -826,18 +826,27 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
             DisplacedTenant {
                 tenant: "llm".to_owned(),
                 ladder: GpuLadder::Interactive,
-                replicas: 1,
+                replicas: 0,
             },
             DisplacedTenant {
                 tenant: "lxc-desktop".to_owned(),
                 ladder: GpuLadder::Desktop,
-                replicas: 1,
+                replicas: 0,
             },
         ],
-        "only the tenants the switch actually stopped are recorded"
+        "only the tenants the switch actually stopped are recorded (placeholder 0 until cwld counts them)"
     );
 
-    let table = table_holding("mac", plan.displaced.clone());
+    // cwld records the counts it read before the stops.
+    let counted: Vec<DisplacedTenant> = plan
+        .displaced
+        .iter()
+        .map(|tenant| DisplacedTenant {
+            replicas: 1,
+            ..tenant.clone()
+        })
+        .collect();
+    let table = table_holding("mac", counted);
     guest_holds_card(&mut gpu, "mac");
     let outcome = conductor().switch(&KernelOwner::Host, &gpu, &snapshot(40 * GIB_MIB), &table);
     let starts: Vec<&PlanStep> = steps(&outcome)
@@ -859,6 +868,24 @@ fn a_guest_switch_records_what_it_displaced_and_leaves_idle_tenants_alone() {
             },
         ],
         "the idle tenant stays as it was: {outcome:?}"
+    );
+}
+
+#[test]
+fn a_return_starts_no_tenant_whose_count_was_never_recorded() {
+    let gpu = host_gpu();
+    let plan = plan_of(switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB)));
+    assert!(plan.displaced.iter().all(|tenant| tenant.replicas == 0));
+    // A grant nobody executed keeps the placeholders: the return starts nothing.
+    let table = table_holding("mac", plan.displaced.clone());
+    let mut back = host_gpu();
+    guest_holds_card(&mut back, "mac");
+    let outcome = conductor().switch(&KernelOwner::Host, &back, &snapshot(40 * GIB_MIB), &table);
+    assert!(
+        !steps(&outcome)
+            .iter()
+            .any(|step| matches!(step, PlanStep::StartHostTenant { .. })),
+        "{outcome:?}"
     );
 }
 

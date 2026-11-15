@@ -279,18 +279,10 @@ impl Inner {
                 .map(|holder| holder.id.clone())
                 .collect();
             match target {
-                KernelOwner::Host => {
-                    for id in custodians {
-                        if let Some(event) = self.table.release(
-                            &id,
-                            &mut self.log,
-                            at,
-                            "switched to the host kernel",
-                        ) {
-                            events.push(event);
-                        }
-                    }
-                }
+                // The guest keeps the card (and its displaced list) until the
+                // executor reports the return complete (`completed`): a return
+                // that fails half way can then be asked for again.
+                KernelOwner::Host => {}
                 KernelOwner::Guest(instance) => {
                     for id in custodians {
                         if let Some(event) = self.table.release(
@@ -333,6 +325,37 @@ impl Inner {
                 .map_err(|error| error.to_string())?;
         }
         Ok((outcome, events))
+    }
+
+    /// The executor finished a plan. For a return to the host, release every
+    /// card custodian now (the switch only granted it). Returns the owner and
+    /// the events of the change.
+    fn completed(&mut self, target: &KernelOwner) -> Result<(KernelOwner, Vec<Event>), String> {
+        let mut events = Vec::new();
+        if target.is_host() {
+            let at = now();
+            let custodians: Vec<HolderId> = self
+                .table
+                .holders
+                .iter()
+                .filter(|holder| holder.is_card_custodian())
+                .map(|holder| holder.id.clone())
+                .collect();
+            for id in custodians {
+                if let Some(event) =
+                    self.table
+                        .release(&id, &mut self.log, at, "switched to the host kernel")
+                {
+                    events.push(event);
+                }
+            }
+            if !events.is_empty() {
+                self.store
+                    .save(&self.table)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok((self.table.gpu_owner.clone(), events))
     }
 
     /// Replace the displaced list of the current guest owner's custodian holder
@@ -572,6 +595,25 @@ fn serve_connection(shared: Arc<Mutex<Inner>>, stream: UnixStream, channel: Chan
             }
         };
         match request {
+            Request::Completed { target } => {
+                let reply = if channel == Channel::Local {
+                    let mut inner = lock(&shared);
+                    match inner.completed(&target) {
+                        Ok((owner, events)) => {
+                            inner.publish(&events);
+                            Reply::Completed { owner }
+                        }
+                        Err(message) => Reply::Error { message },
+                    }
+                } else {
+                    Reply::Error {
+                        message: "completed is accepted on the local socket only".to_owned(),
+                    }
+                };
+                if send(&mut writer, &reply).is_err() {
+                    return;
+                }
+            }
             Request::RecordDisplaced { displaced } => {
                 let reply = if channel == Channel::Local {
                     let mut inner = lock(&shared);

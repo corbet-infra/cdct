@@ -237,6 +237,34 @@ fn a_subscriber_receives_the_change_as_an_event_then_a_snapshot() {
         watcher.receive().expect("the granted plan arrives"),
         Some(Reply::Granted { .. })
     ));
+    // The return is only granted: the guest keeps the card until the executor
+    // reports the plan complete.
+    let status = status_of(
+        watcher
+            .receive()
+            .expect("the snapshot arrives")
+            .expect("the snapshot is present"),
+    );
+    assert_eq!(status.owner, guest("mac"));
+    assert!(
+        matches!(
+            switch(&mut actor, KernelOwner::Host),
+            SwitchOutcome::Plan(_)
+        ),
+        "a return that has not completed can be asked for again"
+    );
+    assert!(matches!(
+        watcher.receive().expect("the second grant arrives"),
+        Some(Reply::Granted { .. })
+    ));
+    let _ = watcher.receive().expect("its snapshot arrives");
+
+    assert_eq!(
+        actor
+            .completed(&KernelOwner::Host)
+            .expect("the completion is accepted"),
+        KernelOwner::Host
+    );
     match watcher.receive().expect("the release event arrives") {
         Some(Reply::Event { event }) => assert_eq!(event.kind, "holder.released"),
         other => panic!("expected the release event, got {other:?}"),
@@ -358,6 +386,18 @@ fn declared_tenants_are_displaced_and_restored_without_a_facts_file() {
     assert_eq!(displaced, stops);
 
     switch(&mut client, guest("mac"));
+    // cwld records the counts it read before the stops (placeholders are 0).
+    let counted: Vec<_> = plan
+        .displaced
+        .iter()
+        .map(|tenant| cdct::DisplacedTenant {
+            replicas: 1,
+            ..tenant.clone()
+        })
+        .collect();
+    client
+        .record_displaced(&counted)
+        .expect("the counts are recorded");
     let back = plan_of(
         &mut client,
         Request::PlanSwitch {

@@ -71,7 +71,7 @@ pub struct DisplacedTenant {
     pub ladder: GpuLadder,
     /// How many replicas it ran when it was stopped; the switch back starts
     /// exactly that many. The planner cannot know the count before the stop,
-    /// so it records the placeholder 1 and `cwld` overwrites it from
+    /// so it records the placeholder 0 and `cwld` overwrites it from
     /// `HostGpu::tenant_replicas` before the stop. Old tables without the
     /// field read as 1.
     #[serde(default = "one_replica")]

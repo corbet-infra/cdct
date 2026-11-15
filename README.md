@@ -152,7 +152,7 @@ Windows).
 ## Protocol
 
 One JSON message per line. A request is `status`, `plan_switch`, `switch`,
-`subscribe` or `record_displaced`:
+`subscribe`, `record_displaced` or `completed`:
 
 ```json
 {"request":"status"}
@@ -160,16 +160,26 @@ One JSON message per line. A request is `status`, `plan_switch`, `switch`,
 {"request":"plan_switch","target":"host"}
 {"request":"subscribe"}
 {"request":"record_displaced","displaced":[{"tenant":"a","ladder":"gpu-desktop","replicas":2}]}
+{"request":"completed","target":"host"}
 ```
 
 `record_displaced` is for the executor and is accepted on the local socket
 only; a guest channel gets an `error`. The planner records a placeholder
-`replicas: 1` per displaced tenant; the executor reads the real count before it
-stops a tenant and sends the list here. The daemon replaces the `displaced`
+`replicas: 0` per displaced tenant (a return starts no tenant at zero, so a
+grant nobody executed restores nothing); the executor reads the real count
+before it stops a tenant and sends the list here. The daemon replaces the `displaced`
 list of the card holder of the current guest owner, saves the table, pushes a
 fresh `status` and answers `{"reply":"recorded","holder":"card-mac"}`. It
 answers `error` when the host owns the card or no card holder exists. Nothing
 else opens the holder table: the daemon holds its lock for its life.
+
+`completed` is the executor's report that a granted plan ran to its end (local
+socket only). A switch to a guest takes the card at the grant; a switch back to
+the host is only granted: the guest keeps the card, and its displaced list,
+until `completed` with `"target":"host"` releases it. A return that fails half
+way can therefore be asked for again (`cdct switch linux` plans it anew, every
+step of it is safe to repeat). The answer is
+`{"reply":"completed","owner":"host"}`.
 
 A single question receives one `status`, `plan` or `switch` reply, or an
 `error`. A subscription first receives a `subscribed` reply (its channel

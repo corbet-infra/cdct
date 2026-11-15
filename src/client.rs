@@ -193,6 +193,20 @@ impl Client {
         }
     }
 
+    /// Report that a granted plan ran to its end; returns who owns the card
+    /// now. Local socket only.
+    pub fn completed(
+        &mut self,
+        target: &cdrv::KernelOwner,
+    ) -> Result<cdrv::KernelOwner, ClientError> {
+        match self.ask(&Request::Completed {
+            target: target.clone(),
+        })? {
+            Reply::Completed { owner } => Ok(owner),
+            other => Err(ClientError::Unexpected(reply_name(&other))),
+        }
+    }
+
     fn read_line(&mut self) -> Result<Option<String>, ClientError> {
         loop {
             if let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
@@ -221,6 +235,7 @@ fn reply_name(reply: &Reply) -> &'static str {
         Reply::Switch { .. } => "switch",
         Reply::Granted { .. } => "granted",
         Reply::Recorded { .. } => "recorded",
+        Reply::Completed { .. } => "completed",
         Reply::Event { .. } => "event",
         Reply::Error { .. } => "error",
     }

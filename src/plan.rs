@@ -237,8 +237,9 @@ fn guest_plan(
                 tenant: tenant.id.clone(),
                 ladder: tenant.ladder,
                 // Placeholder: cwld overwrites it from the driver's count
-                // before the stop.
-                replicas: 1,
+                // before the stop. Zero until then, so a grant nobody executed
+                // (or one whose count could not be read) restores nothing.
+                replicas: 0,
             });
             steps.push(PlanStep::StopHostTenant {
                 tenant: tenant.id.clone(),
@@ -286,7 +287,12 @@ fn host_plan(gpu: &GpuState, displaced: &[DisplacedTenant]) -> SwitchPlan {
         from: gpu.owner.clone(),
         to: KernelOwner::Host,
     });
-    let mut returning: Vec<&DisplacedTenant> = displaced.iter().collect();
+    // A tenant recorded at zero replicas was not running (or never counted):
+    // it was not displaced, so it is not started.
+    let mut returning: Vec<&DisplacedTenant> = displaced
+        .iter()
+        .filter(|tenant| tenant.replicas > 0)
+        .collect();
     returning.sort_by(|left, right| {
         right
             .ladder
