@@ -289,9 +289,10 @@ fn refusal_line(reason: &MemoryRefusal) -> String {
         ),
         MemoryRefusal::ClaimExceedsHostCapacity {
             required_mib,
-            capacity_mib,
+            ram_mib,
         } => format!(
-            "the claim ({required_mib} MiB) exceeds this host's RAM plus swap ({capacity_mib} MiB)"
+            "the claim ({required_mib} MiB) exceeds this host's physical RAM ({ram_mib} MiB); \
+             the claim is pinned, so swap cannot make it fit"
         ),
     }
 }

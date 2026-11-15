@@ -67,12 +67,6 @@ impl MemInfo {
     pub const fn swap_free_mib(&self) -> u64 {
         self.swap_free_kib / 1024
     }
-
-    /// Memory the host can ever give an instance: RAM plus swap.
-    #[must_use]
-    pub const fn capacity_mib(&self) -> u64 {
-        self.total_mib().saturating_add(self.swap_total_mib())
-    }
 }
 
 /// Parse `/proc/meminfo`.

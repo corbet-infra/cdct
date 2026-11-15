@@ -3,8 +3,12 @@
 //! The guard is the one the rest of the fleet uses: headroom is the kernel's
 //! `MemAvailable` plus the ZFS ARC the shrinker may release, that ARC capped at
 //! `size - c_min`. RAM is never taken from a running instance: a target that
-//! does not fit waits (or is declined when even the host's capacity is too
-//! small), and swap may cover a bounded gap only while memory pressure is calm.
+//! does not fit waits (or is declined when the claim cannot fit in physical
+//! RAM), and swap may cover a bounded gap only while memory pressure is calm.
+//!
+//! A GPU VM's claim is pinned by VFIO, so it must fit in `MemTotal`: swap can
+//! only cover part of a claim by moving *other* host memory out, never by
+//! paging the pinned claim itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -83,12 +87,13 @@ pub enum MemoryRefusal {
         /// The `full avg10` limit.
         full_limit: f32,
     },
-    /// The claim is larger than the host's RAM plus swap: waiting cannot help.
+    /// The claim is larger than the host's physical RAM. The claim is pinned,
+    /// so swap cannot make it fit: waiting cannot help either.
     ClaimExceedsHostCapacity {
         /// The claim, in MiB.
         required_mib: u64,
-        /// RAM plus swap, in MiB.
-        capacity_mib: u64,
+        /// Physical RAM (`MemTotal`), in MiB.
+        ram_mib: u64,
     },
 }
 
@@ -121,7 +126,8 @@ pub fn pressure_allows_swap(pressure: &Pressure, policy: &SwapPolicy) -> bool {
 /// Decide RAM for a target with a fixed claim.
 ///
 /// The rules, in order:
-/// 1. a claim beyond RAM plus swap is declined;
+/// 1. a claim beyond physical RAM is declined (the claim is pinned, so swap
+///    cannot make it fit);
 /// 2. a claim covered by headroom is admitted;
 /// 3. a gap within `max_gap` and free swap is admitted while pressure is calm;
 /// 4. the same gap under pressure waits for pressure to subside;
@@ -135,10 +141,11 @@ pub fn decide_memory(
     let headroom = MemoryHeadroom::from_snapshot(snapshot);
     let available_mib = headroom.available_mib();
     let swap_free_mib = snapshot.meminfo.swap_free_mib();
-    if required_mib > snapshot.meminfo.capacity_mib() {
+    let ram_mib = snapshot.meminfo.total_mib();
+    if required_mib > ram_mib {
         return MemoryDecision::Decline(MemoryRefusal::ClaimExceedsHostCapacity {
             required_mib,
-            capacity_mib: snapshot.meminfo.capacity_mib(),
+            ram_mib,
         });
     }
     if available_mib >= required_mib {

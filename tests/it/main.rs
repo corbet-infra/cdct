@@ -226,8 +226,8 @@ fn the_memory_parsers_read_the_kernel_formats() {
     .expect("meminfo parses");
     assert_eq!(mem.total_mib(), 128 * GIB_MIB);
     assert_eq!(mem.available_mib(), 40 * GIB_MIB);
+    assert_eq!(mem.swap_total_mib(), 32 * GIB_MIB);
     assert_eq!(mem.swap_free_mib(), 31 * GIB_MIB);
-    assert_eq!(mem.capacity_mib(), 160 * GIB_MIB);
 
     let arc = parse_arcstats(&arcstats_text(
         32 * GIB_BYTES,
@@ -284,14 +284,28 @@ fn a_shortfall_without_swap_waits_and_displaces_nothing() {
 }
 
 #[test]
-fn a_claim_larger_than_host_and_swap_is_declined() {
+fn a_pinned_claim_larger_than_physical_ram_is_declined() {
     let memory = small_host_snapshot(4 * GIB_MIB, 2 * GIB_MIB, 2 * GIB_MIB);
     let decision = conductor().memory(&memory, 24 * GIB_MIB);
     assert_eq!(
         decision,
         MemoryDecision::Decline(MemoryRefusal::ClaimExceedsHostCapacity {
             required_mib: 24 * GIB_MIB,
-            capacity_mib: 18 * GIB_MIB,
+            ram_mib: 16 * GIB_MIB,
+        })
+    );
+}
+
+#[test]
+fn swap_cannot_make_a_pinned_claim_fit_beyond_physical_ram() {
+    // 16 GiB RAM and 32 GiB swap: RAM plus swap covers 24 GiB, but the claim is
+    // pinned and can never fit in 16 GiB of RAM.
+    let memory = small_host_snapshot(8 * GIB_MIB, 32 * GIB_MIB, 32 * GIB_MIB);
+    assert_eq!(
+        conductor().memory(&memory, 24 * GIB_MIB),
+        MemoryDecision::Decline(MemoryRefusal::ClaimExceedsHostCapacity {
+            required_mib: 24 * GIB_MIB,
+            ram_mib: 16 * GIB_MIB,
         })
     );
 }
@@ -444,7 +458,7 @@ fn a_switch_to_a_gpu_vm_larger_than_the_host_is_declined() {
         SwitchOutcome::Decline {
             reason: SwitchRefusal::Memory(MemoryRefusal::ClaimExceedsHostCapacity {
                 required_mib: 24 * GIB_MIB,
-                capacity_mib: 18 * GIB_MIB,
+                ram_mib: 16 * GIB_MIB,
             }),
         }
     );
