@@ -273,7 +273,9 @@ fn step_line(step: &PlanStep) -> String {
         PlanStep::StopInstance { instance, mode } => {
             format!("stop instance {instance} ({mode:?})")
         }
-        PlanStep::HandOverCard { from, to } => format!("hand over the card: {from} -> {to}"),
+        PlanStep::HandOverCard { device, from, to } => {
+            format!("hand the card {device} over: {from} -> {to}")
+        }
         PlanStep::StartInstance { instance } => format!("start instance {instance}"),
         PlanStep::StartHostTenant { tenant, ladder } => {
             format!("start host tenant {tenant} ({ladder})")

@@ -36,9 +36,12 @@ pub enum PlanStep {
         /// The stop mode (always `clean` in a plan `cdct` produces).
         mode: StopMode,
     },
-    /// The card changes hands, exactly once per plan. The runtime binds or
-    /// unbinds the passthrough driver and resets the device.
+    /// The card changes hands, exactly once per plan. The runtime resolves the
+    /// device name through the hardware inventory, binds or unbinds the
+    /// passthrough driver and resets every function of the card.
     HandOverCard {
+        /// The card's device name in the hardware inventory, never an address.
+        device: String,
         /// The kernel that releases the card.
         from: KernelOwner,
         /// The kernel that receives it.
@@ -242,6 +245,7 @@ fn guest_plan(
         });
     }
     steps.push(PlanStep::HandOverCard {
+        device: gpu.device.clone(),
         from: gpu.owner.clone(),
         to: KernelOwner::Guest(id.clone()),
     });
@@ -268,6 +272,7 @@ fn host_plan(gpu: &GpuState, displaced: &[DisplacedTenant]) -> SwitchPlan {
         });
     }
     steps.push(PlanStep::HandOverCard {
+        device: gpu.device.clone(),
         from: gpu.owner.clone(),
         to: KernelOwner::Host,
     });

@@ -371,7 +371,8 @@ fn a_gap_larger_than_the_swap_allowance_waits() {
 // ---------------------------------------------------------------------------
 
 /// Assert the one-kernel invariant of a plan: the card changes hands exactly
-/// once, every stop precedes the handover, and every start follows it.
+/// once, every stop precedes the handover, and every start follows it. The
+/// handover names the card as the hardware inventory does, never an address.
 fn assert_one_kernel_plan(outcome: &SwitchOutcome, from: &KernelOwner, to: &KernelOwner) {
     let steps = steps(outcome);
     let handovers: Vec<usize> = steps
@@ -384,6 +385,7 @@ fn assert_one_kernel_plan(outcome: &SwitchOutcome, from: &KernelOwner, to: &Kern
     assert_eq!(
         steps[handover],
         PlanStep::HandOverCard {
+            device: host_gpu().device,
             from: from.clone(),
             to: to.clone(),
         }
@@ -434,6 +436,7 @@ fn a_switch_to_a_gpu_vm_with_enough_ram_plans_the_full_handover() {
                         ladder: GpuLadder::Desktop,
                     },
                     PlanStep::HandOverCard {
+                        device: "example-gpu".to_owned(),
                         from: KernelOwner::Host,
                         to: guest("mac"),
                     },
@@ -536,6 +539,29 @@ fn the_windows_desktop_requires_the_office_profile_stopped_cleanly_not_hibernate
         )),
         "a GPU handover never hibernates: {steps:?}"
     );
+}
+
+#[test]
+fn the_handover_names_the_card_as_the_hardware_inventory_does() {
+    let mut gpu = host_gpu();
+    gpu.device = "example-card-2".to_owned();
+    let outcome = switch(&guest("mac"), &gpu, &snapshot(40 * GIB_MIB));
+    let steps = steps(&outcome);
+    let handover = &steps[position(steps, |step| matches!(step, PlanStep::HandOverCard { .. }))
+        .expect("the plan hands the card over")];
+    assert_eq!(
+        *handover,
+        PlanStep::HandOverCard {
+            device: "example-card-2".to_owned(),
+            from: KernelOwner::Host,
+            to: guest("mac"),
+        }
+    );
+
+    // The plan is data the runtime resolves: a device name, never an address.
+    let encoded = serde_json::to_value(handover).expect("the step serialises");
+    assert_eq!(encoded["hand_over_card"]["device"], "example-card-2");
+    assert!(encoded["hand_over_card"].get("address").is_none());
 }
 
 #[test]
@@ -738,6 +764,7 @@ fn a_switch_back_to_host_restores_exactly_the_displaced_tenants_in_ladder_order(
                 mode: StopMode::Clean,
             },
             PlanStep::HandOverCard {
+                device: "example-gpu".to_owned(),
                 from: guest("mac"),
                 to: KernelOwner::Host,
             },
