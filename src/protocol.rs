@@ -218,6 +218,9 @@ pub enum Reply {
         /// Whether the device plugin is restarted (a lost registration).
         #[serde(default)]
         restart_plugin: bool,
+        /// When the conductor wants the next observation without an event.
+        #[serde(default)]
+        wake_at: Option<cdrv::Timestamp>,
     },
     /// One pushed state change.
     Event {

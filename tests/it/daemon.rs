@@ -621,9 +621,15 @@ fn the_live_ladder_sheds_records_the_count_and_restores_when_the_vram_is_free() 
     let mut reporter = connect(running.local_socket());
 
     // 15 of 16 GiB in use and the broker starved: the best-effort tenant goes.
-    let (ladder, restore, _) = reporter
+    let cdct::PressureAnswer {
+        ladder,
+        restore,
+        wake_at,
+        ..
+    } = reporter
         .pressure(&ladder_observation(15, true))
         .expect("the observation is answered");
+    assert_eq!(wake_at, None, "without a cooldown nothing has to wait");
     assert!(
         matches!(&ladder, cdct::LadderDecision::ScaleLowestPriorityToZero { tenant, .. } if tenant == "render/farm"),
         "{ladder:?}"
@@ -655,9 +661,10 @@ fn the_live_ladder_sheds_records_the_count_and_restores_when_the_vram_is_free() 
     assert_eq!(table.shed[0].replicas, 2);
 
     // The pressure is gone and 4 GiB were freed: 10 of 16 GiB in use leaves room.
-    let (_, restore, _) = reporter
+    let restore = reporter
         .pressure(&ladder_observation(11, false))
-        .expect("the observation is answered");
+        .expect("the observation is answered")
+        .restore;
     assert_eq!(
         restore,
         Some(cdct::RestoreDecision::Restore {
@@ -685,6 +692,63 @@ fn the_live_ladder_sheds_records_the_count_and_restores_when_the_vram_is_free() 
         .expect("the table reads")
         .expect("the table exists");
     assert!(table.shed.is_empty());
+}
+
+#[test]
+fn a_shed_tenant_asks_for_the_next_observation_when_the_cooldown_ends() {
+    let tree = TempTree::new("daemon-ladder-wake");
+    let mut config = configuration(&tree, 64 * GIB_MIB);
+    config.policy.gpu.cooldown_secs = 30;
+    let running = cdct::daemon::start(config).expect("the daemon starts");
+    let mut reporter = connect(running.local_socket());
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    let shed = reporter
+        .pressure(&ladder_observation(15, true))
+        .expect("the observation is answered");
+    assert!(matches!(
+        shed.ladder,
+        cdct::LadderDecision::ScaleLowestPriorityToZero { .. }
+    ));
+    let wake_at = u128::from(
+        shed.wake_at
+            .expect("a shed tenant waits for its restore")
+            .as_millis(),
+    );
+    assert!(
+        (before + 29_000..=before + 31_000).contains(&wake_at),
+        "the wake-up is the cooldown's end, 30 s after the shed: {} ms",
+        wake_at - before
+    );
+
+    // The executor records the live count before the stop.
+    reporter
+        .record_displaced(&[DisplacedTenant {
+            tenant: "render/farm".to_owned(),
+            ladder: GpuLadder::BestEffort,
+            replicas: 2,
+        }])
+        .expect("the count is recorded with the shed");
+
+    // VRAM is free again, but the cooldown runs: the restore holds, and the
+    // conductor asks for the observation at the same deadline.
+    let held = reporter
+        .pressure(&ladder_observation(11, false))
+        .expect("the observation is answered");
+    assert!(
+        matches!(
+            held.restore,
+            Some(cdct::RestoreDecision::None {
+                reason: cdct::RestoreHold::Cooldown { .. }
+            })
+        ),
+        "{:?}",
+        held.restore
+    );
+    assert_eq!(held.wake_at, shed.wake_at);
 }
 
 #[test]

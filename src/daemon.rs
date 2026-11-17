@@ -109,6 +109,7 @@ struct PressureOutcome {
     ladder: LadderDecision,
     restore: Option<RestoreDecision>,
     restart_plugin: bool,
+    wake_at: Option<Timestamp>,
     plan: Option<SwitchPlan>,
     events: Vec<Event>,
 }
@@ -409,6 +410,7 @@ impl Inner {
                 },
                 restore: None,
                 restart_plugin: true,
+                wake_at: self.wake_at(at),
                 plan: Some(guard_plan()),
                 events: vec![event],
             });
@@ -508,9 +510,25 @@ impl Inner {
             ladder,
             restore,
             restart_plugin: false,
+            wake_at: self.wake_at(at),
             plan,
             events,
         })
+    }
+
+    /// When the next observation is wanted without an event: the end of the
+    /// running cooldown while the host owns the card and a shed tenant still
+    /// waits (for its restore, or for the measurement of what it freed).
+    /// Without it a second restore waited for an unrelated event (4 minutes
+    /// in the live proof of 2026-11-17).
+    fn wake_at(&self, at: Timestamp) -> Option<Timestamp> {
+        let waiting = self
+            .table
+            .shed
+            .iter()
+            .any(|shed| shed.replicas > 0 || shed.freed_bytes.is_none());
+        (self.table.gpu_owner.is_host() && waiting && at < self.cooldown_until)
+            .then_some(self.cooldown_until)
     }
 
     /// Replace the displaced list of the current guest owner's custodian holder
@@ -805,6 +823,7 @@ fn serve_connection(shared: Arc<Mutex<Inner>>, stream: UnixStream, channel: Chan
                                 ladder: outcome.ladder,
                                 restore: outcome.restore,
                                 restart_plugin: outcome.restart_plugin,
+                                wake_at: outcome.wake_at,
                             }
                         }
                         Err(message) => Reply::Error { message },

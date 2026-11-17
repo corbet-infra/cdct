@@ -199,3 +199,18 @@ pub fn decide_guard(
             )
         })
 }
+
+/// The conductor's whole answer to one pressure observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PressureAnswer {
+    /// The shed decision.
+    pub ladder: crate::gpu::LadderDecision,
+    /// The restore decision, taken when nothing is shed.
+    pub restore: Option<RestoreDecision>,
+    /// Whether the device plugin is restarted (a lost registration).
+    pub restart_plugin: bool,
+    /// When the conductor wants the next observation although no event may
+    /// come: the end of a running cooldown while a shed tenant waits for its
+    /// restore. A deadline, not a poll; `None` when nothing waits.
+    pub wake_at: Option<Timestamp>,
+}

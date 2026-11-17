@@ -63,8 +63,8 @@ pub use gpu::{
 };
 pub use holders::{Holder, HolderState, HolderStore, HolderTable, StoreError};
 pub use ladder::{
-    PressureObservation, RestoreDecision, RestoreHold, ShedTenant, decide_guard, decide_restore,
-    measure_freed,
+    PressureAnswer, PressureObservation, RestoreDecision, RestoreHold, ShedTenant, decide_guard,
+    decide_restore, measure_freed,
 };
 pub use memory::{
     MemoryAdmission, MemoryDecision, MemoryHeadroom, MemoryRefusal, decide_memory,
